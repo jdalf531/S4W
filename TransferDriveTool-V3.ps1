@@ -740,15 +740,46 @@ function Copy-WithRetry {
         [int]$MaxRetries = 3
     )
 
+    # Verify source exists before attempting copy
+    if (-not (Test-Path $Source)) {
+        Write-Status "✗ Source file not found: $Source"
+        return $false
+    }
+
+    # Backup destination if it exists
+    $destExists = Test-Path $Destination
+    $backupPath = $null
+    if ($destExists) {
+        $backupPath = "$Destination.backup"
+        if (Test-Path $backupPath) {
+            Remove-Item $backupPath -Force | Out-Null
+        }
+        Copy-Item -Path $Destination -Destination $backupPath -Force | Out-Null
+    }
+
     $attempt = 0
     while ($attempt -lt $MaxRetries) {
         try {
             Copy-Item -Path $Source -Destination $Destination -Force
+            
+            # Clean up backup if copy succeeded
+            if ($backupPath -and (Test-Path $backupPath)) {
+                Remove-Item $backupPath -Force | Out-Null
+            }
+            
             return $true
         }
         catch {
             $attempt++
             Write-Status "Error copying '$Source' (attempt $attempt of $MaxRetries): $($_.Exception.Message)"
+            
+            # Restore backup on final failure
+            if ($attempt -eq $MaxRetries -and $backupPath -and (Test-Path $backupPath)) {
+                Copy-Item -Path $backupPath -Destination $Destination -Force | Out-Null
+                Write-Status "Restored backup for: $Destination"
+                Remove-Item $backupPath -Force | Out-Null
+            }
+            
             Start-Sleep -Seconds 1
         }
     }
@@ -856,14 +887,26 @@ if (-not (Test-Path $CsvLogPath)) {
 
         $shouldCopy = $true
 
-        # Skip if destination is newer or same timestamp
+        # Check if destination file already exists
         if (Test-Path $destFile) {
             $destInfo = Get-Item $destFile
+            $sourceSize = $file.Length
+            $destSize = $destInfo.Length
+            
+            # Skip if destination is newer or same timestamp
             if ($destInfo.LastWriteTimeUtc -ge $file.LastWriteTimeUtc) {
-                Write-Status "Skipping (not newer): $relativePath"
+                Write-Status "⊘ File exists (destination newer/same): $relativePath [Source: $($file.LastWriteTimeUtc), Dest: $($destInfo.LastWriteTimeUtc)]"
                 $script:FilesSkipped++
                 Update-ProgressUI
                 continue
+            }
+            
+            # Warn if file exists but is older (will be overwritten)
+            if ($sourceSize -ne $destSize) {
+                Write-Status "⚠ File exists with different size (will overwrite): $relativePath [Source: {0:N0} bytes, Dest: {1:N0} bytes]" -f $sourceSize, $destSize
+            }
+            else {
+                Write-Status "⚠ File exists with same size (checking hash): $relativePath"
             }
         }
 
