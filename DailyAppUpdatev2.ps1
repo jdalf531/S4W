@@ -1,0 +1,267 @@
+﻿<#
+.SYNOPSIS
+    Automated daily download script for enterprise applications using Evergreen + manual URLs.
+.DESCRIPTION
+    - Evergreen apps: MSI-first, x64-preferred, offline-capable only.
+    - Filters out beta/preview/EA/nightly/dev releases.
+    - Version-aware: skips downloads if version has not changed.
+    - Manual apps: Static vendor URLs.
+    - Preserves original vendor filenames.
+    - Skips stub/web installers under 1 MB.
+    - Archives previous versions (keeps 2 revisions).
+.NOTES
+    Author:   SCCM/MECM Administrator
+    Modified: 2026-01-05
+#>
+
+# ==============================
+# Configuration
+# ==============================
+$DownloadPath  = "C:\Viper\DTA\Daily"
+$ArchivePath   = "C:\Viper\DTA\Daily\Archive"
+$MetadataPath  = "C:\Viper\DTA\Daily\Metadata"
+$LogFile       = "C:\Viper\DTA\Daily\UpdateLog.txt"
+
+# ==============================
+# Evergreen app map
+# ==============================
+$AppMap = @{
+    "7zip"                        = "7zip"
+    "AdobeAcrobatReaderDC"        = "AcrobatReader"
+    "GoogleChrome"                = "Chrome"
+    "MicrosoftEdge"               = "Edge"
+    "MicrosoftPowerToys"          = "MPT"
+    "MozillaFirefox"              = "Firefox"
+    "NotepadPlusPlus"             = "NotepadPP"
+    "VideoLanVlcPlayer"           = "VLC"
+    "Npcap"                       = "Npcap"
+    "OracleJava8"                 = "Java8"
+    "GitForWindows"               = "Git"
+    "MicrosoftPowerShell"         = "PowerShell"
+    "MicrosoftVisualStudioCode"   = "VSCode"
+    "PSAppDeployToolkit"          = "PSADT"
+    "Python"                      = "Python"
+    "PuTTy"                       = "PuTTy"
+    "Wireshark"                   = "Wireshark"
+    "YubicoAuthenticator"         = "YubiKey"
+}
+
+# Manual apps with vendor URLs
+$ManualAppMap = @{
+    "ElasticAgent"         = "https://www.elastic.co/downloads/elastic-agent"
+    "KeePass"              = "https://keepass.info/download.html"
+}
+
+# ==============================
+# Functions - Logging & Metadata
+# ==============================
+function Write-Log {
+    param([string]$Message)
+    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    Add-Content -Path $LogFile -Value "$timestamp - $Message"
+}
+
+function Get-StoredVersion {
+    param([string]$AppName)
+
+    $metaPath = Join-Path $MetadataPath "$AppName.json"
+    if (Test-Path $metaPath) {
+        try {
+            return Get-Content $metaPath -Raw | ConvertFrom-Json
+        }
+        catch {
+            Write-Log "ERROR reading metadata for ${AppName}: $_"
+            return $null
+        }
+    }
+    return $null
+}
+
+function Save-StoredVersion {
+    param(
+        [string]$AppName,
+        [string]$Version,
+        [string]$FileName
+    )
+
+    $metaPath = Join-Path $MetadataPath "$AppName.json"
+    $obj = [PSCustomObject]@{
+        Version  = $Version
+        FileName = $FileName
+        Updated  = Get-Date
+    }
+
+    try {
+        $obj | ConvertTo-Json | Set-Content $metaPath
+        Write-Log "Updated metadata for $AppName to version $Version"
+    }
+    catch {
+        Write-Log "ERROR writing metadata for ${AppName}: $_"
+    }
+}
+
+# ==============================
+# Evergreen Download Function
+# ==============================
+function Download-Application {
+    param(
+        [string]$AppName,
+        [string]$ShortBaseName
+    )
+
+    try {
+        $allInfo = Get-EvergreenApp -Name $AppName
+
+        # Filter out beta/preview/EA/nightly/dev releases
+        $allInfo = $allInfo | Where-Object {
+            $_.Release -notmatch "beta|preview|early|ea|nightly|dev" -and
+            $_.Channel -notmatch "beta|preview|early|ea|nightly|dev" -and
+            $_.Version -notmatch "beta|preview|ea|rc|nightly"
+        }
+
+        # Preference order: MSI x64 → MSI x86 → EXE x64 → EXE x86
+        $appInfo = $allInfo | Where-Object { $_.Type -match "MSI" -and $_.Architecture -eq "x64" } | Select-Object -First 1
+        if (-not $appInfo) { $appInfo = $allInfo | Where-Object { $_.Type -match "MSI" -and $_.Architecture -eq "x86" } | Select-Object -First 1 }
+        if (-not $appInfo) { $appInfo = $allInfo | Where-Object { $_.Type -match "EXE" -and $_.Architecture -eq "x64" } | Select-Object -First 1 }
+        if (-not $appInfo) { $appInfo = $allInfo | Where-Object { $_.Type -match "EXE" -and $_.Architecture -eq "x86" } | Select-Object -First 1 }
+
+        if (-not $appInfo) {
+            Write-Log "No stable installer found for ${AppName}"
+            return
+        }
+
+        # Version-aware skip (also verify file exists)
+        $stored = Get-StoredVersion -AppName $AppName
+        $StandardizedFileName = "${ShortBaseName}-$($appInfo.Version)-$($appInfo.Architecture)$FileExtension"
+        $FinalFile = Join-Path $DownloadPath $StandardizedFileName
+        
+        if ($stored -and $stored.Version -eq $appInfo.Version -and (Test-Path $FinalFile)) {
+            Write-Log "$AppName is already at latest version ($($appInfo.Version)) and file exists. Skipping download."
+            return
+        }
+
+        $Url = $appInfo.Uri
+        $VendorFileName = [System.Uri]::UnescapeDataString((Split-Path $Url -Leaf))
+        $FileExtension = [System.IO.Path]::GetExtension($VendorFileName)
+
+        $TempFile  = Join-Path $DownloadPath "$StandardizedFileName.tmp"
+
+        Write-Log "Downloading ${AppName} from $Url (version $($appInfo.Version))"
+        Invoke-WebRequest -Uri $Url -OutFile $TempFile -UseBasicParsing
+
+        # Skip stub installers under 1 MB
+        $fileInfo = Get-Item $TempFile
+        if ($fileInfo.Length -lt 1048576) {
+            Write-Log "WARNING: ${AppName} appears to be a web installer (size: $([math]::Round($fileInfo.Length/1KB,2)) KB). Skipping."
+            Remove-Item $TempFile -Force
+            return
+        }
+
+        # Archive existing file
+        if (Test-Path $FinalFile) {
+            $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+            $ArchivedFile = Join-Path $ArchivePath "$StandardizedFileName_$timestamp"
+            Move-Item -Path $FinalFile -Destination $ArchivedFile
+            Write-Log "Archived previous version of $StandardizedFileName"
+
+            # Keep only 2 archives
+            $archives = Get-ChildItem -Path $ArchivePath -Filter "$StandardizedFileName*" | Sort-Object LastWriteTime -Descending
+            if ($archives.Count -gt 2) {
+                $archives | Select-Object -Skip 2 | Remove-Item -Force
+                Write-Log "Cleaned up old archives for $StandardizedFileName"
+            }
+        }
+
+        Move-Item -Path $TempFile -Destination $FinalFile -Force
+        Write-Log "Downloaded $StandardizedFileName successfully"
+
+        # Save version metadata
+        Save-StoredVersion -AppName $AppName -Version $appInfo.Version -FileName $StandardizedFileName
+    }
+    catch {
+        Write-Log "ERROR downloading ${AppName}: $_"
+    }
+}
+
+# ==============================
+# Main Execution
+# ==============================
+foreach ($path in @($DownloadPath, $ArchivePath, $MetadataPath)) {
+    if (!(Test-Path $path)) { New-Item -ItemType Directory -Path $path -Force | Out-Null }
+}
+
+Write-Log "===== Viper Evergreen Update Run Started ====="
+
+# Import Evergreen
+try {
+    Import-Module Evergreen -ErrorAction Stop
+    Write-Log "Evergreen module imported."
+}
+catch {
+    Write-Log "ERROR importing Evergreen module: $_"
+    throw
+}
+
+# Update Evergreen catalog
+try {
+    Update-Evergreen
+    Write-Log "Evergreen catalog updated."
+}
+catch {
+    Write-Log "ERROR updating Evergreen catalog: $_"
+}
+
+# Evergreen apps
+foreach ($app in $AppMap.GetEnumerator()) {
+    Write-Log "Processing Evergreen app: $($app.Key)"
+    Download-Application -AppName $app.Key -ShortBaseName $app.Value
+}
+
+# Manual apps (download-only)
+foreach ($manualApp in $ManualAppMap.GetEnumerator()) {
+    try {
+        $Url       = $manualApp.Value
+        $ShortBase = $manualApp.Key
+
+        $OriginalFileName = [System.Uri]::UnescapeDataString((Split-Path $Url -Leaf)).Replace(" ", "-")
+        if (-not $OriginalFileName) {
+            $OriginalFileName = "$ShortBase.exe"
+        }
+
+        $TempFile  = Join-Path $DownloadPath "$OriginalFileName.tmp"
+        $FinalFile = Join-Path $DownloadPath $OriginalFileName
+
+        Write-Log "Downloading manual app ${ShortBase} from $Url"
+        Invoke-WebRequest -Uri $Url -OutFile $TempFile -UseBasicParsing
+
+        # Skip stub installers under 1 MB
+        $fileInfo = Get-Item $TempFile
+        if ($fileInfo.Length -lt 1048576) {
+            Write-Log "WARNING: ${ShortBase} appears to be a web installer or non-binary. Skipping."
+            Remove-Item $TempFile -Force
+            continue
+        }
+
+        # Archive existing file
+        if (Test-Path $FinalFile) {
+            $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+            $ArchivedFile = Join-Path $ArchivePath "$OriginalFileName_$timestamp"
+            Move-Item -Path $FinalFile -Destination $ArchivedFile
+            Write-Log "Archived previous version of $OriginalFileName"
+
+            $archives = Get-ChildItem -Path $ArchivePath -Filter "$OriginalFileName*" | Sort-Object LastWriteTime -Descending
+            if ($archives.Count -gt 2) {
+                $archives | Select-Object -Skip 2 | Remove-Item -Force
+                Write-Log "Cleaned up old archives for $OriginalFileName"
+            }
+        }
+
+        Move-Item -Path $TempFile -Destination $FinalFile -Force
+        Write-Log "Downloaded $OriginalFileName successfully"
+    }
+    catch {
+        Write-Log "ERROR downloading manual app ${ShortBase}: $_"
+    }
+}
+
+Write-Log "===== Viper Evergreen Update Run Completed ====="
