@@ -1,4 +1,21 @@
-﻿$Xaml = @"
+﻿# ============================
+# HIDE CONSOLE WINDOW
+# ============================
+# This is a GUI (WPF) tool; hide the powershell.exe console it launched in.
+# No-op if there's no console to hide (e.g. run from the ISE/VS Code terminal).
+Add-Type -Name Window -Namespace Console -MemberDefinition '
+[DllImport("Kernel32.dll")]
+public static extern IntPtr GetConsoleWindow();
+
+[DllImport("user32.dll")]
+public static extern bool ShowWindow(IntPtr hWnd, Int32 nCmdShow);
+'
+$ConsoleWindowHandle = [Console.Window]::GetConsoleWindow()
+if ($ConsoleWindowHandle -ne [IntPtr]::Zero) {
+    [Console.Window]::ShowWindow($ConsoleWindowHandle, 0) | Out-Null  # 0 = SW_HIDE
+}
+
+$Xaml = @"
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="MPN DTA Tool"
@@ -71,7 +88,7 @@
                 <!-- ========================= -->
                 <!-- TAB 1 — Commercial → Drive -->
                 <!-- ========================= -->
-                <TabItem Header="To Drive (Commercial → Drive)">
+                <TabItem x:Name="tabCommercial" Header="To Drive (Commercial → Drive)">
                     <Grid Margin="10">
                         <Grid.RowDefinitions>
                             <RowDefinition Height="Auto"/>
@@ -213,7 +230,7 @@
                 <!-- ========================= -->
                 <!-- TAB 2 — Drive → MPN -->
                 <!-- ========================= -->
-                <TabItem Header="From Drive (Drive → MPN)">
+                <TabItem x:Name="tabMPN" Header="From Drive (Drive → MPN)">
                     <Grid Margin="10">
                         <Grid.RowDefinitions>
                             <RowDefinition Height="Auto"/>
@@ -480,6 +497,34 @@
 </Window>
 "@
 # ============================
+# DOMAIN DETECTION
+# ============================
+# Commercial (non-domain-joined) boxes only need Commercial -> Drive.
+# EUR* domain boxes only need Drive -> MPN (that portion's network share is
+# only reachable there). Skipping the inapplicable portion avoids the
+# "network path was not found" spam from probing shares that can't be reached.
+$ComputerSystem = Get-CimInstance -ClassName Win32_ComputerSystem
+$IsDomainJoined = $ComputerSystem.PartOfDomain
+$DomainName     = $ComputerSystem.Domain
+
+if (-not $IsDomainJoined) {
+    $ToolMode = "Commercial"
+}
+elseif ($DomainName -like "EUR*") {
+    $ToolMode = "MPN"
+}
+else {
+    Add-Type -AssemblyName PresentationFramework
+    [System.Windows.MessageBox]::Show(
+        "This machine's domain ('$DomainName') is not recognized by the MPN DTA Tool.`n`nExpected either a non-domain-joined (commercial) machine or a domain starting with 'EUR'. Contact IT before running this tool.",
+        "MPN DTA Tool - Unsupported Domain",
+        [System.Windows.MessageBoxButton]::OK,
+        [System.Windows.MessageBoxImage]::Error
+    ) | Out-Null
+    exit 1
+}
+
+# ============================
 # PRESET TABLES
 # ============================
 
@@ -522,13 +567,17 @@ $Presets_MPN = @{
 # ============================
 # ENSURE FOLDER STRUCTURE EXISTS
 # ============================
-foreach ($preset in $Presets_Commercial.Values) {
-    if (-not (Test-Path $preset.Source)) { New-Item -ItemType Directory -Path $preset.Source -Force | Out-Null }
-    if (-not (Test-Path $preset.Dest))   { New-Item -ItemType Directory -Path $preset.Dest   -Force | Out-Null }
+if ($ToolMode -eq "Commercial") {
+    foreach ($preset in $Presets_Commercial.Values) {
+        if (-not (Test-Path $preset.Source)) { New-Item -ItemType Directory -Path $preset.Source -Force | Out-Null }
+        if (-not (Test-Path $preset.Dest))   { New-Item -ItemType Directory -Path $preset.Dest   -Force | Out-Null }
+    }
 }
-foreach ($preset in $Presets_MPN.Values) {
-    if (-not (Test-Path $preset.Source)) { New-Item -ItemType Directory -Path $preset.Source -Force | Out-Null }
-    if (-not (Test-Path $preset.Dest))   { New-Item -ItemType Directory -Path $preset.Dest   -Force | Out-Null }
+elseif ($ToolMode -eq "MPN") {
+    foreach ($preset in $Presets_MPN.Values) {
+        if (-not (Test-Path $preset.Source)) { New-Item -ItemType Directory -Path $preset.Source -Force | Out-Null }
+        if (-not (Test-Path $preset.Dest))   { New-Item -ItemType Directory -Path $preset.Dest   -Force | Out-Null }
+    }
 }
 
 # ============================
@@ -548,7 +597,19 @@ $Window.Dispatcher.Invoke([action]{}, "Render")
 # ============================
 
 # Tabs
-$tabMain = $Window.FindName("tabMain")
+$tabMain       = $Window.FindName("tabMain")
+$tabCommercial = $Window.FindName("tabCommercial")
+$tabMPN        = $Window.FindName("tabMPN")
+
+# Hide whichever portion doesn't apply on this machine (see DOMAIN DETECTION)
+if ($ToolMode -eq "Commercial") {
+    $tabMPN.Visibility = "Collapsed"
+    $tabCommercial.IsSelected = $true
+}
+elseif ($ToolMode -eq "MPN") {
+    $tabCommercial.Visibility = "Collapsed"
+    $tabMPN.IsSelected = $true
+}
 
 # Tab 1 controls
 $cbUser_Commercial        = $Window.FindName("cbUser_Commercial")
@@ -648,6 +709,112 @@ function Write-Status {
 }
 
 # ============================
+# AUTO-ARCHIVE OLD DATA (Commercial mode only)
+# ============================
+# Runs once at launch. Keeps both the flat Viper source and the dated drive
+# folders from growing forever, and keeps the MPN-side scan (which skips each
+# Archive folder, see the source-file scan above) from re-pushing old data.
+
+# Drive side: E:\DTA\<user>\yyyyMMdd folders older than 1 week -> E:\DTA\<user>\Archive\yyyyMMdd
+function Invoke-DriveArchiveSweep {
+    Write-Status "Archive sweep: scanning drive folders for dated folders older than 1 week..."
+    $cutoff = (Get-Date).Date.AddDays(-7)
+    $archivedCount = 0
+
+    foreach ($presetUser in $Presets_Commercial.Keys) {
+        $userDest = $Presets_Commercial[$presetUser].Dest
+        if (-not (Test-Path $userDest)) { continue }
+
+        $archiveRoot = Join-Path $userDest "Archive"
+
+        $dateFolders = Get-ChildItem -Path $userDest -Directory -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -ne "Archive" -and $_.Name -match '^\d{8}$' }
+
+        foreach ($folder in $dateFolders) {
+            $folderDate = [datetime]::MinValue
+            $parsed = [datetime]::TryParseExact(
+                $folder.Name, "yyyyMMdd",
+                [System.Globalization.CultureInfo]::InvariantCulture,
+                [System.Globalization.DateTimeStyles]::None,
+                [ref]$folderDate)
+
+            if ($parsed -and $folderDate -lt $cutoff) {
+                if (-not (Test-Path $archiveRoot)) {
+                    New-Item -ItemType Directory -Path $archiveRoot -Force | Out-Null
+                }
+
+                $archiveDest = Join-Path $archiveRoot $folder.Name
+                if (Test-Path $archiveDest) {
+                    Write-Status "Archive sweep: skipped drive\$presetUser\$($folder.Name) (already archived)"
+                    continue
+                }
+
+                try {
+                    Move-Item -Path $folder.FullName -Destination $archiveDest -Force
+                    Write-Status "Archive sweep: archived drive\$presetUser\$($folder.Name)"
+                    $archivedCount++
+                }
+                catch {
+                    Write-Status "Archive sweep: failed to archive drive\$presetUser\$($folder.Name): $($_.Exception.Message)"
+                }
+            }
+        }
+    }
+
+    Write-Status "Drive archive sweep complete. $archivedCount folder(s) archived."
+}
+
+# Source side: C:\Viper\DTA\<user> is flat (no date-named folders), so age is
+# judged per top-level item by LastWriteTime instead of by name.
+function Invoke-SourceArchiveSweep {
+    Write-Status "Archive sweep: scanning source folders for items older than 1 week..."
+    $cutoff = (Get-Date).AddDays(-7)
+    $archivedCount = 0
+
+    foreach ($presetUser in $Presets_Commercial.Keys) {
+        $userSource = $Presets_Commercial[$presetUser].Source
+        if (-not (Test-Path $userSource)) { continue }
+
+        $archiveRoot = Join-Path $userSource "Archive"
+
+        # CreationTime, not LastWriteTime: Copy-Item preserves the source file's
+        # original modified date, so a file authored weeks ago but copied into
+        # this folder just now would otherwise look immediately archivable.
+        # CreationTime reflects when it actually landed here.
+        $items = Get-ChildItem -Path $userSource -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -ne "Archive" -and $_.CreationTime -lt $cutoff }
+
+        foreach ($item in $items) {
+            if (-not (Test-Path $archiveRoot)) {
+                New-Item -ItemType Directory -Path $archiveRoot -Force | Out-Null
+            }
+
+            $archiveDest = Join-Path $archiveRoot $item.Name
+            if (Test-Path $archiveDest) {
+                Write-Status "Archive sweep: skipped source\$presetUser\$($item.Name) (already archived)"
+                continue
+            }
+
+            try {
+                Move-Item -Path $item.FullName -Destination $archiveDest -Force
+                Write-Status "Archive sweep: archived source\$presetUser\$($item.Name)"
+                $archivedCount++
+            }
+            catch {
+                Write-Status "Archive sweep: failed to archive source\$presetUser\$($item.Name): $($_.Exception.Message)"
+            }
+        }
+    }
+
+    Write-Status "Source archive sweep complete. $archivedCount item(s) archived."
+}
+
+if ($ToolMode -eq "Commercial") {
+    Invoke-DriveArchiveSweep
+    Invoke-SourceArchiveSweep
+}
+
+# ============================
 # CSV LOGGING
 # ============================
 #$CsvLogPath = "C:\VIPER\DTA\DataTransferLog.csv"
@@ -675,7 +842,7 @@ function Add-CsvLogEntry {
         [string]$ScanVerify
     )
 
-    $lineCount = (Measure-Object -Line -Path $CsvLogPath).Lines
+    $lineCount = (Get-Content -Path $CsvLogPath | Measure-Object -Line).Lines
     $seq = "{0:D3}" -f ($lineCount)
     $year = (Get-Date).Year
     $logNumber = "$year-$seq"
@@ -862,7 +1029,10 @@ if (-not (Test-Path $CsvLogPath)) {
 
     Write-Status "Scanning source files for changes..."
 
-    $files = Get-ChildItem -Path $src -Recurse -File
+    # Never re-scan the Archive folder (holds items already swept aside as >1 week old)
+    $archivePrefix = (Join-Path $src "Archive") + [System.IO.Path]::DirectorySeparatorChar
+    $files = Get-ChildItem -Path $src -Recurse -File |
+        Where-Object { -not $_.FullName.StartsWith($archivePrefix, [System.StringComparison]::OrdinalIgnoreCase) }
     $script:TotalFiles   = $files.Count
     $script:FilesCopied  = 0
     $script:FilesSkipped = 0
