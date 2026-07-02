@@ -777,12 +777,17 @@ function Invoke-SourceArchiveSweep {
 
         $archiveRoot = Join-Path $userSource "Archive"
 
-        # CreationTime, not LastWriteTime: Copy-Item preserves the source file's
-        # original modified date, so a file authored weeks ago but copied into
-        # this folder just now would otherwise look immediately archivable.
-        # CreationTime reflects when it actually landed here.
+        # Use whichever of CreationTime/LastWriteTime is newer: Copy-Item preserves
+        # the source file's original modified date (so a file authored weeks ago
+        # but copied in just now would look immediately archivable by CreationTime
+        # alone), while a file edited in place after landing here would look
+        # immediately archivable by LastWriteTime alone. Only archive once both
+        # are stale.
         $items = Get-ChildItem -Path $userSource -ErrorAction SilentlyContinue |
-            Where-Object { $_.Name -ne "Archive" -and $_.CreationTime -lt $cutoff }
+            Where-Object {
+                $mostRecent = if ($_.CreationTime -gt $_.LastWriteTime) { $_.CreationTime } else { $_.LastWriteTime }
+                $_.Name -ne "Archive" -and $mostRecent -lt $cutoff
+            }
 
         foreach ($item in $items) {
             if (-not (Test-Path $archiveRoot)) {
