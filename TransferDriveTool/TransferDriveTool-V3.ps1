@@ -402,6 +402,21 @@ $Xaml = @"
                                    Text="Current: (none)"
                                    Foreground="#E0E0E0"/>
                     </StackPanel>
+
+                    <!-- Current File Byte Progress -->
+                    <ProgressBar x:Name="pbCurrentFile"
+                                 Height="14"
+                                 Minimum="0"
+                                 Maximum="100"
+                                 Value="0"
+                                 Margin="0,5,0,0"
+                                 Background="#2D2D30"
+                                 Foreground="#3FA9F5"/>
+
+                    <TextBlock x:Name="lblCurrentFileProgress"
+                               Text=""
+                               Foreground="#E0E0E0"
+                               Margin="0,3,0,0"/>
                 </StackPanel>
 
                 <!-- STATUS LOG TEXTBOX -->
@@ -640,9 +655,11 @@ $btnRun    = $Window.FindName("btnRun")
 $btnClose  = $Window.FindName("btnClose")
 
 # Progress controls
-$pbProgress         = $Window.FindName("pbProgress")
-$lblProgressSummary = $Window.FindName("lblProgressSummary")
-$lblCurrentFile     = $Window.FindName("lblCurrentFile")
+$pbProgress             = $Window.FindName("pbProgress")
+$lblProgressSummary     = $Window.FindName("lblProgressSummary")
+$lblCurrentFile         = $Window.FindName("lblCurrentFile")
+$pbCurrentFile          = $Window.FindName("pbCurrentFile")
+$lblCurrentFileProgress = $Window.FindName("lblCurrentFileProgress")
 # ============================
 # POPULATE USER DROPDOWNS
 # ============================
