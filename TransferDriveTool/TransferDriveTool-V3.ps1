@@ -880,11 +880,140 @@ function Add-CsvLogEntry {
 }
 
 # ============================
-# HASHING
+# RESUMABLE COPY ENGINE
 # ============================
-function Get-FileHashSHA256 {
-    param([string]$filePath)
-    (Get-FileHash -Path $filePath -Algorithm SHA256).Hash
+# Copies Source -> Destination in chunks via a "<Destination>.partial" file,
+# hashing the source incrementally as it reads (no separate full hash pass on
+# the happy path). Only renames .partial onto Destination once a post-copy
+# hash check passes, so Destination is never touched mid-copy. A sidecar
+# "<Destination>.partial.meta" records the source's Length/LastWriteTimeUtc
+# so an interrupted copy can resume later -- even after a full app restart --
+# as long as the source hasn't changed; otherwise it restarts from byte 0.
+function Copy-FileResumable {
+    param(
+        [Parameter(Mandatory)][string]$Source,
+        [Parameter(Mandatory)][string]$Destination,
+        [int]$ChunkSizeBytes = 4MB,
+        [scriptblock]$ProgressCallback = $null,
+        [int[]]$RetryDelaySeconds = @(2,5,15,30,60),
+        [int]$MaxAttempts = 15
+    )
+
+    if (-not (Test-Path -LiteralPath $Source)) {
+        return [PSCustomObject]@{ Success = $false; SourceHash = $null; DestHash = $null; Error = "Source file not found: $Source" }
+    }
+
+    $sourceInfo = Get-Item -LiteralPath $Source
+    $sourceLength = $sourceInfo.Length
+    $sourceWriteTicks = $sourceInfo.LastWriteTimeUtc.Ticks
+
+    $partialPath = "$Destination.partial"
+    $metaPath = "$Destination.partial.meta"
+
+    function Get-ResumeOffset {
+        if (-not (Test-Path -LiteralPath $partialPath)) { return 0L }
+        if (-not (Test-Path -LiteralPath $metaPath)) {
+            Remove-Item -LiteralPath $partialPath -Force -ErrorAction SilentlyContinue
+            return 0L
+        }
+        $metaLines = @(Get-Content -LiteralPath $metaPath -ErrorAction SilentlyContinue)
+        if ($metaLines.Count -lt 2 -or $metaLines[0] -ne "$sourceLength" -or $metaLines[1] -ne "$sourceWriteTicks") {
+            Remove-Item -LiteralPath $partialPath -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $metaPath -Force -ErrorAction SilentlyContinue
+            return 0L
+        }
+        return (Get-Item -LiteralPath $partialPath).Length
+    }
+
+    $lastError = $null
+
+    for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+        $resumeOffset = Get-ResumeOffset
+
+        if ($resumeOffset -eq 0L -and -not (Test-Path -LiteralPath $metaPath)) {
+            Set-Content -LiteralPath $metaPath -Value @("$sourceLength", "$sourceWriteTicks")
+        }
+
+        $sourceStream = $null
+        $partialStream = $null
+        $hasher = [System.Security.Cryptography.SHA256]::Create()
+
+        try {
+            $sourceStream = [System.IO.File]::Open($Source, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::Read)
+            $partialStream = [System.IO.File]::Open($partialPath, [System.IO.FileMode]::OpenOrCreate, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+
+            $buffer = New-Object byte[] $ChunkSizeBytes
+
+            # Resuming: re-hash the already-copied prefix by re-reading it from
+            # the source (ground truth), so the final hash is still correct
+            # for the whole file even though we didn't keep hash state across
+            # attempts/restarts.
+            $hashed = 0L
+            while ($hashed -lt $resumeOffset) {
+                $toRead = [Math]::Min($ChunkSizeBytes, $resumeOffset - $hashed)
+                $read = $sourceStream.Read($buffer, 0, $toRead)
+                if ($read -le 0) { break }
+                $hasher.TransformBlock($buffer, 0, $read, $buffer, 0) | Out-Null
+                $hashed += $read
+            }
+
+            $partialStream.Seek($resumeOffset, [System.IO.SeekOrigin]::Begin) | Out-Null
+            $partialStream.SetLength($resumeOffset)
+
+            $bytesDone = $resumeOffset
+            $lastReport = Get-Date
+
+            while ($true) {
+                $read = $sourceStream.Read($buffer, 0, $buffer.Length)
+                if ($read -le 0) { break }
+
+                $hasher.TransformBlock($buffer, 0, $read, $buffer, 0) | Out-Null
+                $partialStream.Write($buffer, 0, $read)
+                $bytesDone += $read
+
+                if ($ProgressCallback -and ((Get-Date) - $lastReport).TotalMilliseconds -ge 250) {
+                    & $ProgressCallback $bytesDone $sourceLength
+                    $lastReport = Get-Date
+                }
+            }
+
+            $hasher.TransformFinalBlock([byte[]]::new(0), 0, 0) | Out-Null
+            $sourceHash = ([BitConverter]::ToString($hasher.Hash) -replace '-', '')
+
+            if ($ProgressCallback) { & $ProgressCallback $bytesDone $sourceLength }
+
+            $partialStream.Close(); $partialStream = $null
+            $sourceStream.Close(); $sourceStream = $null
+
+            $destHash = (Get-FileHash -LiteralPath $partialPath -Algorithm SHA256).Hash
+
+            if ($sourceHash -ne $destHash) {
+                Remove-Item -LiteralPath $partialPath -Force -ErrorAction SilentlyContinue
+                Remove-Item -LiteralPath $metaPath -Force -ErrorAction SilentlyContinue
+                $lastError = "Hash mismatch after copy (source $sourceHash, dest $destHash)"
+            }
+            else {
+                Move-Item -LiteralPath $partialPath -Destination $Destination -Force
+                Remove-Item -LiteralPath $metaPath -Force -ErrorAction SilentlyContinue
+                return [PSCustomObject]@{ Success = $true; SourceHash = $sourceHash; DestHash = $destHash; Error = $null }
+            }
+        }
+        catch {
+            $lastError = $_.Exception.Message
+        }
+        finally {
+            if ($partialStream) { $partialStream.Dispose() }
+            if ($sourceStream) { $sourceStream.Dispose() }
+            $hasher.Dispose()
+        }
+
+        if ($attempt -lt $MaxAttempts) {
+            $delayIndex = [Math]::Min($attempt - 1, $RetryDelaySeconds.Count - 1)
+            Start-Sleep -Seconds $RetryDelaySeconds[$delayIndex]
+        }
+    }
+
+    return [PSCustomObject]@{ Success = $false; SourceHash = $null; DestHash = $null; Error = $lastError }
 }
 
 # ============================
