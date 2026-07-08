@@ -1017,128 +1017,30 @@ function Copy-FileResumable {
 }
 
 # ============================
-# TRANSFER STATE / PROGRESS
-# ============================
-$script:TotalFiles   = 0
-$script:FilesCopied  = 0
-$script:FilesSkipped = 0
-$script:StartTime    = $null
-
-function Update-ProgressUI {
-    if ($script:TotalFiles -gt 0) {
-        $percent = [math]::Round(
-            ($script:FilesCopied + $script:FilesSkipped) / $script:TotalFiles * 100, 0
-        )
-    } else {
-        $percent = 0
-    }
-
-    $pbProgress.Value = $percent
-
-    $lblProgressSummary.Text =
-        "Files: $($script:FilesCopied + $script:FilesSkipped) / $($script:TotalFiles) | Copied: $($script:FilesCopied) | Skipped: $($script:FilesSkipped)"
-}
-
-function Set-CurrentFileLabel {
-    param([string]$relativePath)
-    if ([string]::IsNullOrWhiteSpace($relativePath)) {
-        $lblCurrentFile.Text = "Current: (none)"
-    } else {
-        $lblCurrentFile.Text = "Current: $relativePath"
-    }
-}
-
-# ============================
-# RETRY LOGIC FOR COPY
-# ============================
-function Copy-WithRetry {
-    param(
-        [string]$Source,
-        [string]$Destination,
-        [int]$MaxRetries = 3
-    )
-
-    # Verify source exists before attempting copy
-    if (-not (Test-Path $Source)) {
-        Write-Status "✗ Source file not found: $Source"
-        return $false
-    }
-
-    # Backup destination if it exists
-    $destExists = Test-Path $Destination
-    $backupPath = $null
-    if ($destExists) {
-        $backupPath = "$Destination.backup"
-        if (Test-Path $backupPath) {
-            Remove-Item $backupPath -Force | Out-Null
-        }
-        Copy-Item -Path $Destination -Destination $backupPath -Force | Out-Null
-    }
-
-    $attempt = 0
-    while ($attempt -lt $MaxRetries) {
-        try {
-            Copy-Item -Path $Source -Destination $Destination -Force
-            
-            # Clean up backup if copy succeeded
-            if ($backupPath -and (Test-Path $backupPath)) {
-                Remove-Item $backupPath -Force | Out-Null
-            }
-            
-            return $true
-        }
-        catch {
-            $attempt++
-            Write-Status "Error copying '$Source' (attempt $attempt of $MaxRetries): $($_.Exception.Message)"
-            
-            # Restore backup on final failure
-            if ($attempt -eq $MaxRetries -and $backupPath -and (Test-Path $backupPath)) {
-                Copy-Item -Path $backupPath -Destination $Destination -Force | Out-Null
-                Write-Status "Restored backup for: $Destination"
-                Remove-Item $backupPath -Force | Out-Null
-            }
-            
-            Start-Sleep -Seconds 1
-        }
-    }
-
-    return $false
-}
-# ============================
-# INCREMENTAL COPY ENGINE (UPGRADED)
+# INCREMENTAL COPY ENGINE (ASYNC)
 # ============================
 function Copy-Files {
 
-    # Determine active tab
     $activeTab = $tabMain.SelectedIndex
 
-    # ============================
-# SELECT CSV LOG LOCATION BASED ON TAB
-# ============================
-if ($activeTab -eq 0) {
-    # Tab 1 — Commercial → Drive
-    $CsvLogPath = "E:\DTA\Logging\DataTransferLog.csv"
-}
-else {
-    # Tab 2 — Drive → MPN
-    $CsvLogPath = "C:\VIPER\DTA\DataTransferLog.csv"
-}
+    if ($activeTab -eq 0) {
+        $CsvLogPath = "E:\DTA\Logging\DataTransferLog.csv"
+    }
+    else {
+        $CsvLogPath = "C:\VIPER\DTA\DataTransferLog.csv"
+    }
 
-# Ensure CSV exists
-if (-not (Test-Path $CsvLogPath)) {
-    $headers = "LogEntryNumber,DTAName,AuthorizingManager,DateTimeUTC,SourceSystem,DestinationSystem,FileName,FileClassification,FileSize,SHA256,MediaUsed,Justification,ScanReviewVerification"
-    Set-Content -Path $CsvLogPath -Value $headers
-}
-
+    if (-not (Test-Path $CsvLogPath)) {
+        $headers = "LogEntryNumber,DTAName,AuthorizingManager,DateTimeUTC,SourceSystem,DestinationSystem,FileName,FileClassification,FileSize,SHA256,MediaUsed,Justification,ScanReviewVerification"
+        Set-Content -Path $CsvLogPath -Value $headers
+    }
 
     if ($activeTab -eq 0) {
-        # TAB 1 — Commercial → Drive
         $src = $txtSource_Commercial.Text.Trim()
         $dstRoot = $txtDest_Commercial.Text.Trim()
         $user = $cbUser_Commercial.SelectedItem
     }
     elseif ($activeTab -eq 1) {
-        # TAB 2 — Drive → MPN
         $src = $txtSource_MPN.Text.Trim()
         $dstRoot = $txtDest_MPN.Text.Trim()
         $user = $cbUser_MPN.SelectedItem
@@ -1163,7 +1065,6 @@ if (-not (Test-Path $CsvLogPath)) {
         return
     }
 
-    # Create dated folder
     $dateFolder = (Get-Date -Format "yyyyMMdd")
     $dst = Join-Path $dstRoot $dateFolder
 
@@ -1180,114 +1081,204 @@ if (-not (Test-Path $CsvLogPath)) {
 
     Write-Status "Scanning source files for changes..."
 
-    # Never re-scan the Archive folder (holds items already swept aside as >1 week old)
     $archivePrefix = (Join-Path $src "Archive") + [System.IO.Path]::DirectorySeparatorChar
     $files = Get-ChildItem -Path $src -Recurse -File |
         Where-Object { -not $_.FullName.StartsWith($archivePrefix, [System.StringComparison]::OrdinalIgnoreCase) }
-    $script:TotalFiles   = $files.Count
-    $script:FilesCopied  = 0
-    $script:FilesSkipped = 0
-    $script:StartTime    = Get-Date
 
-    # Reset UI
-    $pbProgress.Value = 0
-    Update-ProgressUI
-    Set-CurrentFileLabel ""
-
-    foreach ($file in $files) {
-
-        $relativePath = $file.FullName.Substring($src.Length).TrimStart("\","/")
-        Set-CurrentFileLabel $relativePath
-
-        $destFile = Join-Path $dst $relativePath
-        $destDir = Split-Path $destFile -Parent
-
-        if (-not (Test-Path $destDir)) {
-            New-Item -ItemType Directory -Path $destDir -Force | Out-Null
-        }
-
-        $shouldCopy = $true
-
-        # Check if destination file already exists
-        if (Test-Path $destFile) {
-            $destInfo = Get-Item $destFile
-            $sourceSize = $file.Length
-            $destSize = $destInfo.Length
-            
-            # Skip if destination is newer or same timestamp
-            if ($destInfo.LastWriteTimeUtc -ge $file.LastWriteTimeUtc) {
-                Write-Status "⊘ File exists (destination newer/same): $relativePath [Source: $($file.LastWriteTimeUtc), Dest: $($destInfo.LastWriteTimeUtc)]"
-                $script:FilesSkipped++
-                Update-ProgressUI
-                continue
-            }
-            
-            # Warn if file exists but is older (will be overwritten)
-            if ($sourceSize -ne $destSize) {
-                Write-Status "⚠ File exists with different size (will overwrite): $relativePath [Source: {0:N0} bytes, Dest: {1:N0} bytes]" -f $sourceSize, $destSize
-            }
-            else {
-                Write-Status "⚠ File exists with same size (checking hash): $relativePath"
-            }
-        }
-
-        # Copy with retry
-        $copied = Copy-WithRetry -Source $file.FullName -Destination $destFile -MaxRetries 3
-        if (-not $copied) {
-            Write-Status "Failed to copy after retries: $relativePath"
-            $script:FilesSkipped++
-            Update-ProgressUI
-            continue
-        }
-
-        Write-Status "Copied: $relativePath"
-
-        try {
-            # Hash verification
-            $sourceHash = Get-FileHashSHA256 $file.FullName
-            $destHash   = Get-FileHashSHA256 $destFile
-
-            if ($sourceHash -ne $destHash) {
-                Write-Status "HASH MISMATCH: $relativePath"
-            }
-            else {
-                Write-Status "Hash verified: $relativePath"
-            }
-
-            # File size
-            $size = "{0:N0} KB" -f ($file.Length / 1KB)
-
-            # CSV log entry
-            Add-CsvLogEntry `
-                -DTAName        $user `
-                -Manager        $txtManager.Text `
-                -SourceSystem   $txtSourceSystem.Text `
-                -DestSystem     $txtDestSystem.Text `
-                -FileName       $relativePath `
-                -Classification $txtClassification.Text `
-                -FileSize       $size `
-                -Checksum       $destHash `
-                -MediaUsed      $txtMediaUsed.Text `
-                -Justification  $txtJustification.Text `
-                -ScanVerify     $txtScanVerify.Text
-
-            Write-Status "Logged: $relativePath"
-            $script:FilesCopied++
-        }
-        catch {
-            Write-Status "Failed to hash/log $relativePath : $($_.Exception.Message)"
-            $script:FilesSkipped++
-        }
-
-        Update-ProgressUI
+    if ($files.Count -eq 0) {
+        Write-Status "No files found to transfer."
+        return
     }
 
-    # Summary
-    $elapsed = (Get-Date) - $script:StartTime
-    Write-Status "Transfer complete."
-    Write-Status "Summary: Total=$($script:TotalFiles), Copied=$($script:FilesCopied), Skipped=$($script:FilesSkipped), Elapsed=$($elapsed.ToString())"
+    # Snapshot everything the background runspace needs from UI controls now --
+    # it's not safe to read WPF control properties from another thread.
+    $snapshot = [PSCustomObject]@{
+        DtaName        = $user
+        Manager        = $txtManager.Text
+        SourceSystem   = $txtSourceSystem.Text
+        DestSystem     = $txtDestSystem.Text
+        Classification = $txtClassification.Text
+        MediaUsed      = $txtMediaUsed.Text
+        Justification  = $txtJustification.Text
+        ScanVerify     = $txtScanVerify.Text
+    }
 
-    Set-CurrentFileLabel ""
+    $pbProgress.Value = 0
+    $pbCurrentFile.Value = 0
+    $lblProgressSummary.Text = "Files: 0 / $($files.Count) | Copied: 0 | Skipped: 0"
+    $lblCurrentFile.Text = "Current: (none)"
+    $lblCurrentFileProgress.Text = ""
+    $btnRun.IsEnabled = $false
+    $btnClose.IsEnabled = $false
+
+    $copyFileResumableBody = (Get-Item Function:\Copy-FileResumable).ScriptBlock.ToString()
+    $addCsvLogEntryBody    = (Get-Item Function:\Add-CsvLogEntry).ScriptBlock.ToString()
+
+    $iss = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault()
+    $iss.Commands.Add((New-Object System.Management.Automation.Runspaces.SessionStateFunctionEntry("Copy-FileResumable", $copyFileResumableBody)))
+    $iss.Commands.Add((New-Object System.Management.Automation.Runspaces.SessionStateFunctionEntry("Add-CsvLogEntry", $addCsvLogEntryBody)))
+
+    $runspace = [runspacefactory]::CreateRunspace($iss)
+    $runspace.ApartmentState = "STA"
+    $runspace.ThreadOptions = "ReuseThread"
+    $runspace.Open()
+
+    $runspace.SessionStateProxy.SetVariable("Dispatcher", $Window.Dispatcher)
+    $runspace.SessionStateProxy.SetVariable("pbProgress", $pbProgress)
+    $runspace.SessionStateProxy.SetVariable("lblProgressSummary", $lblProgressSummary)
+    $runspace.SessionStateProxy.SetVariable("lblCurrentFile", $lblCurrentFile)
+    $runspace.SessionStateProxy.SetVariable("pbCurrentFile", $pbCurrentFile)
+    $runspace.SessionStateProxy.SetVariable("lblCurrentFileProgress", $lblCurrentFileProgress)
+    $runspace.SessionStateProxy.SetVariable("txtStatus", $txtStatus)
+    $runspace.SessionStateProxy.SetVariable("LogFile", $LogFile)
+    $runspace.SessionStateProxy.SetVariable("CsvLogPath", $CsvLogPath)
+    $runspace.SessionStateProxy.SetVariable("Files", $files)
+    $runspace.SessionStateProxy.SetVariable("SrcRoot", $src)
+    $runspace.SessionStateProxy.SetVariable("DstRoot", $dst)
+    $runspace.SessionStateProxy.SetVariable("Snapshot", $snapshot)
+
+    $batchScript = {
+        $totalFiles   = $Files.Count
+        $filesCopied  = 0
+        $filesSkipped = 0
+        $startTime    = Get-Date
+
+        function Write-BackgroundStatus {
+            param([string]$msg)
+            $timestamp = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
+            $line = "[$timestamp] $msg"
+            Add-Content -Path $LogFile -Value $line
+            $Dispatcher.Invoke([action]{
+                $txtStatus.AppendText("$line`r`n")
+                $txtStatus.ScrollToEnd()
+            }, "Normal")
+        }
+
+        function Update-BackgroundProgress {
+            $percent = [math]::Round((($filesCopied + $filesSkipped) / $totalFiles) * 100, 0)
+            $Dispatcher.Invoke([action]{
+                $pbProgress.Value = $percent
+                $lblProgressSummary.Text = "Files: $($filesCopied + $filesSkipped) / $totalFiles | Copied: $filesCopied | Skipped: $filesSkipped"
+            }, "Normal")
+        }
+
+        foreach ($file in $Files) {
+            $relativePath = $file.FullName.Substring($SrcRoot.Length).TrimStart("\", "/")
+
+            $Dispatcher.Invoke([action]{
+                $lblCurrentFile.Text = "Current: $relativePath"
+                $pbCurrentFile.Value = 0
+                $lblCurrentFileProgress.Text = ""
+            }, "Normal")
+
+            $destFile = Join-Path $DstRoot $relativePath
+            $destDir = Split-Path $destFile -Parent
+
+            if (-not (Test-Path $destDir)) {
+                New-Item -ItemType Directory -Path $destDir -Force | Out-Null
+            }
+
+            if (Test-Path $destFile) {
+                $destInfo = Get-Item $destFile
+                if ($destInfo.LastWriteTimeUtc -ge $file.LastWriteTimeUtc) {
+                    Write-BackgroundStatus "(skip) File exists (destination newer/same): $relativePath"
+                    $filesSkipped++
+                    Update-BackgroundProgress
+                    continue
+                }
+                Write-BackgroundStatus "(overwrite) File exists, source is newer: $relativePath"
+            }
+
+            $progressCallback = {
+                param($bytesDone, $bytesTotal)
+                $percent = if ($bytesTotal -gt 0) { [math]::Round(($bytesDone / $bytesTotal) * 100, 0) } else { 0 }
+                $doneMb = [math]::Round($bytesDone / 1MB, 1)
+                $totalMb = [math]::Round($bytesTotal / 1MB, 1)
+                $Dispatcher.Invoke([action]{
+                    $pbCurrentFile.Value = $percent
+                    $lblCurrentFileProgress.Text = "$doneMb MB / $totalMb MB"
+                }, "Normal")
+            }.GetNewClosure()
+
+            $result = Copy-FileResumable -Source $file.FullName -Destination $destFile -ProgressCallback $progressCallback
+
+            if (-not $result.Success) {
+                Write-BackgroundStatus "Failed to copy $relativePath after retries: $($result.Error)"
+                $filesSkipped++
+                Update-BackgroundProgress
+                continue
+            }
+
+            Write-BackgroundStatus "Copied and hash-verified: $relativePath"
+
+            try {
+                $size = "{0:N0} KB" -f ($file.Length / 1KB)
+                Add-CsvLogEntry `
+                    -DTAName        $Snapshot.DtaName `
+                    -Manager        $Snapshot.Manager `
+                    -SourceSystem   $Snapshot.SourceSystem `
+                    -DestSystem     $Snapshot.DestSystem `
+                    -FileName       $relativePath `
+                    -Classification $Snapshot.Classification `
+                    -FileSize       $size `
+                    -Checksum       $result.DestHash `
+                    -MediaUsed      $Snapshot.MediaUsed `
+                    -Justification  $Snapshot.Justification `
+                    -ScanVerify     $Snapshot.ScanVerify
+
+                Write-BackgroundStatus "Logged: $relativePath"
+                $filesCopied++
+            }
+            catch {
+                Write-BackgroundStatus "Failed to write CSV log for $relativePath : $($_.Exception.Message)"
+                $filesSkipped++
+            }
+
+            Update-BackgroundProgress
+        }
+
+        $elapsed = (Get-Date) - $startTime
+        Write-BackgroundStatus "Transfer complete."
+        Write-BackgroundStatus "Summary: Total=$totalFiles, Copied=$filesCopied, Skipped=$filesSkipped, Elapsed=$($elapsed.ToString())"
+
+        $Dispatcher.Invoke([action]{
+            $lblCurrentFile.Text = "Current: (none)"
+            $pbCurrentFile.Value = 0
+            $lblCurrentFileProgress.Text = ""
+        }, "Normal")
+    }
+
+    $powershell = [powershell]::Create()
+    $powershell.Runspace = $runspace
+    $powershell.AddScript($batchScript) | Out-Null
+    $asyncResult = $powershell.BeginInvoke()
+
+    $completionTimer = New-Object System.Windows.Threading.DispatcherTimer
+    $completionTimer.Interval = [TimeSpan]::FromMilliseconds(500)
+    $completionTimer.Add_Tick({
+        if (-not $asyncResult.IsCompleted) { return }
+
+        $completionTimer.Stop()
+
+        try {
+            $powershell.EndInvoke($asyncResult) | Out-Null
+        }
+        catch {
+            Write-Status "Transfer runspace error: $($_.Exception.Message)"
+        }
+
+        foreach ($errorRecord in $powershell.Streams.Error) {
+            Write-Status "Transfer error: $errorRecord"
+        }
+
+        $powershell.Dispose()
+        $runspace.Close()
+        $runspace.Dispose()
+
+        $btnRun.IsEnabled = $true
+        $btnClose.IsEnabled = $true
+    }.GetNewClosure())
+    $completionTimer.Start()
 }
 # ============================
 # BUTTON HANDLERS
