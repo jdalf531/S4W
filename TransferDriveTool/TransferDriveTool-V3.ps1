@@ -1111,6 +1111,7 @@ function Copy-Files {
     $btnRun.IsEnabled = $false
     $btnClose.IsEnabled = $false
 
+    try {
     $copyFileResumableBody = (Get-Item Function:\Copy-FileResumable).ScriptBlock.ToString()
     $addCsvLogEntryBody    = (Get-Item Function:\Add-CsvLogEntry).ScriptBlock.ToString()
 
@@ -1252,6 +1253,17 @@ function Copy-Files {
     $powershell.Runspace = $runspace
     $powershell.AddScript($batchScript) | Out-Null
     $asyncResult = $powershell.BeginInvoke()
+    }
+    catch {
+        Write-Status "Failed to start transfer: $($_.Exception.Message)"
+
+        if ($powershell) { $powershell.Dispose() }
+        if ($runspace) { $runspace.Close(); $runspace.Dispose() }
+
+        $btnRun.IsEnabled = $true
+        $btnClose.IsEnabled = $true
+        return
+    }
 
     $completionTimer = New-Object System.Windows.Threading.DispatcherTimer
     $completionTimer.Interval = [TimeSpan]::FromMilliseconds(500)
