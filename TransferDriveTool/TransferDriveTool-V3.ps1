@@ -1226,9 +1226,17 @@ function Copy-Files {
                     $srcInfo = Get-Item -LiteralPath $file.FullName
                     if ($metaLines.Count -ge 2 -and $metaLines[0] -eq "$($srcInfo.Length)" -and $metaLines[1] -eq "$($srcInfo.LastWriteTimeUtc.Ticks)") {
                         if (-not (Test-Path $destDir)) { New-Item -ItemType Directory -Path $destDir -Force | Out-Null }
-                        Write-BackgroundStatus "Adopting orphaned partial copy for $relativePath (resuming across a day boundary)"
-                        Move-Item -LiteralPath $orphanPartial -Destination "$destFile.partial" -Force
-                        Move-Item -LiteralPath $orphanMeta -Destination "$destFile.partial.meta" -Force
+                        try {
+                            Move-Item -LiteralPath $orphanPartial -Destination "$destFile.partial" -Force
+                            Move-Item -LiteralPath $orphanMeta -Destination "$destFile.partial.meta" -Force
+                            Write-BackgroundStatus "Adopting orphaned partial copy for $relativePath (resuming across a day boundary)"
+                        }
+                        catch {
+                            Write-BackgroundStatus "Failed to adopt orphaned partial copy for $relativePath : $($_.Exception.Message)"
+                            foreach ($stray in @("$destFile.partial", "$destFile.partial.meta", $orphanPartial, $orphanMeta)) {
+                                if (Test-Path -LiteralPath $stray) { Remove-Item -LiteralPath $stray -Force -ErrorAction SilentlyContinue }
+                            }
+                        }
                     }
                 }
             }
