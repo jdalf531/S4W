@@ -1136,6 +1136,7 @@ function Copy-Files {
     $runspace.SessionStateProxy.SetVariable("Files", $files)
     $runspace.SessionStateProxy.SetVariable("SrcRoot", $src)
     $runspace.SessionStateProxy.SetVariable("DstRoot", $dst)
+    $runspace.SessionStateProxy.SetVariable("DstUserRoot", $dstRoot)
     $runspace.SessionStateProxy.SetVariable("Snapshot", $snapshot)
 
     $batchScript = {
@@ -1161,6 +1162,22 @@ function Copy-Files {
                 $pbProgress.Value = $percent
                 $lblProgressSummary.Text = "Files: $($filesCopied + $filesSkipped) / $totalFiles | Copied: $filesCopied | Skipped: $filesSkipped"
             }, "Normal")
+        }
+
+        # Look back up to 7 days for an orphaned .partial from an interrupted transfer
+        # that crossed a midnight boundary before today's dated folder existed. Keyed
+        # by relative path so the per-file loop below is an O(1) hashtable lookup,
+        # not a repeated network Test-Path per file.
+        $orphanedPartials = @{}
+        for ($daysAgo = 1; $daysAgo -le 7; $daysAgo++) {
+            $candidateDateFolder = Join-Path $DstUserRoot ((Get-Date).AddDays(-$daysAgo).ToString("yyyyMMdd"))
+            if (-not (Test-Path $candidateDateFolder)) { continue }
+            Get-ChildItem -Path $candidateDateFolder -Recurse -File -Filter "*.partial" -ErrorAction SilentlyContinue | ForEach-Object {
+                $relPath = $_.FullName.Substring($candidateDateFolder.Length).TrimStart("\", "/") -replace '\.partial$', ''
+                if (-not $orphanedPartials.ContainsKey($relPath)) {
+                    $orphanedPartials[$relPath] = $_.FullName
+                }
+            }
         }
 
         foreach ($file in $Files) {
@@ -1200,6 +1217,21 @@ function Copy-Files {
                     $lblCurrentFileProgress.Text = "$doneMb MB / $totalMb MB"
                 }, "Normal")
             }.GetNewClosure()
+
+            if (-not (Test-Path "$destFile.partial") -and $orphanedPartials.ContainsKey($relativePath)) {
+                $orphanPartial = $orphanedPartials[$relativePath]
+                $orphanMeta = "$orphanPartial.meta"
+                if (Test-Path $orphanMeta) {
+                    $metaLines = @(Get-Content -LiteralPath $orphanMeta -ErrorAction SilentlyContinue)
+                    $srcInfo = Get-Item -LiteralPath $file.FullName
+                    if ($metaLines.Count -ge 2 -and $metaLines[0] -eq "$($srcInfo.Length)" -and $metaLines[1] -eq "$($srcInfo.LastWriteTimeUtc.Ticks)") {
+                        if (-not (Test-Path $destDir)) { New-Item -ItemType Directory -Path $destDir -Force | Out-Null }
+                        Write-BackgroundStatus "Adopting orphaned partial copy for $relativePath (resuming across a day boundary)"
+                        Move-Item -LiteralPath $orphanPartial -Destination "$destFile.partial" -Force
+                        Move-Item -LiteralPath $orphanMeta -Destination "$destFile.partial.meta" -Force
+                    }
+                }
+            }
 
             $result = Copy-FileResumable -Source $file.FullName -Destination $destFile -ProgressCallback $progressCallback
 
