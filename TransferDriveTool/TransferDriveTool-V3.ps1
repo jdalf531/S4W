@@ -1305,30 +1305,52 @@ function Copy-Files {
         return
     }
 
+    $transferStartTime = Get-Date
+    $stallTimeout = [TimeSpan]::FromMinutes(10)
+
     $completionTimer = New-Object System.Windows.Threading.DispatcherTimer
     $completionTimer.Interval = [TimeSpan]::FromMilliseconds(500)
     $completionTimer.Add_Tick({
-        if (-not $asyncResult.IsCompleted) { return }
+        if (-not $asyncResult.IsCompleted) {
+            # Safety net: if the background transfer never signals completion
+            # (for any reason), don't leave the UI permanently disabled --
+            # force it back to usable after a generous timeout instead.
+            if (((Get-Date) - $transferStartTime) -gt $stallTimeout) {
+                $completionTimer.Stop()
+                Write-Status "Transfer did not finish within $([int]$stallTimeout.TotalMinutes) minutes and appears stalled. Re-enabling controls; verify the destination files manually, since the background transfer's true state is now unknown."
+                try { $powershell.Stop() } catch {}
+                $btnRun.IsEnabled = $true
+                $btnClose.IsEnabled = $true
+            }
+            return
+        }
 
         $completionTimer.Stop()
 
         try {
-            $powershell.EndInvoke($asyncResult) | Out-Null
+            try {
+                $powershell.EndInvoke($asyncResult) | Out-Null
+            }
+            catch {
+                Write-Status "Transfer runspace error: $($_.Exception.Message)"
+            }
+
+            foreach ($errorRecord in $powershell.Streams.Error) {
+                Write-Status "Transfer error: $errorRecord"
+            }
+
+            $powershell.Dispose()
+            $runspace.Close()
+            $runspace.Dispose()
         }
         catch {
-            Write-Status "Transfer runspace error: $($_.Exception.Message)"
+            Write-Status "Error cleaning up transfer runspace: $($_.Exception.Message)"
         }
-
-        foreach ($errorRecord in $powershell.Streams.Error) {
-            Write-Status "Transfer error: $errorRecord"
+        finally {
+            # However cleanup goes, the UI must never stay stuck disabled.
+            $btnRun.IsEnabled = $true
+            $btnClose.IsEnabled = $true
         }
-
-        $powershell.Dispose()
-        $runspace.Close()
-        $runspace.Dispose()
-
-        $btnRun.IsEnabled = $true
-        $btnClose.IsEnabled = $true
     }.GetNewClosure())
     $completionTimer.Start()
 }
