@@ -67,12 +67,7 @@ $Xaml = @"
                 <TextBlock Text="MPN DTA TOOL"
                            FontSize="28"
                            FontWeight="Bold"
-                           Foreground="#FF3A3A"
-                           Margin="0,0,10,0"/>
-                <TextBlock Text="(Don't Copy That Floppy)"
-                           FontSize="20"
-                           Foreground="#FFFFFF"
-                           VerticalAlignment="Bottom"/>
+                           Foreground="#FF3A3A"/>
             </StackPanel>
         </Border>
 
@@ -440,11 +435,29 @@ $Xaml = @"
                     BorderThickness="2">
                 <StackPanel>
 
-                    <TextBlock Text="DTA Logging Info"
-                               FontSize="20"
-                               FontWeight="Bold"
-                               Foreground="#FF3A3A"
-                               Margin="0,0,0,10"/>
+                    <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
+                        <TextBlock Text="DTA Logging Info"
+                                   FontSize="20"
+                                   FontWeight="Bold"
+                                   Foreground="#FF3A3A"
+                                   VerticalAlignment="Center"
+                                   Margin="0,0,15,0"/>
+
+                        <ComboBox x:Name="cbProfile"
+                                  Width="200"
+                                  IsEditable="True"
+                                  VerticalAlignment="Center"
+                                  Margin="0,0,5,0"/>
+
+                        <Button x:Name="btnSaveProfile"
+                                Content="Save"
+                                Width="70"
+                                Margin="0,0,5,0"/>
+
+                        <Button x:Name="btnDeleteProfile"
+                                Content="Delete"
+                                Width="70"/>
+                    </StackPanel>
 
                     <Grid>
                         <Grid.RowDefinitions>
@@ -464,38 +477,31 @@ $Xaml = @"
 
                         <Label Grid.Row="0" Grid.Column="0" Content="Authorizing Manager:"/>
                         <TextBox x:Name="txtManager"
-                                 Grid.Row="0" Grid.Column="1"
-                                 Text="Kevin Rockel"/>
+                                 Grid.Row="0" Grid.Column="1"/>
 
                         <Label Grid.Row="1" Grid.Column="0" Content="Source System:"/>
                         <TextBox x:Name="txtSourceSystem"
-                                 Grid.Row="1" Grid.Column="1"
-                                 Text="Commercial"/>
+                                 Grid.Row="1" Grid.Column="1"/>
 
                         <Label Grid.Row="2" Grid.Column="0" Content="Destination System:"/>
                         <TextBox x:Name="txtDestSystem"
-                                 Grid.Row="2" Grid.Column="1"
-                                 Text="MPN DTA Station"/>
+                                 Grid.Row="2" Grid.Column="1"/>
 
                         <Label Grid.Row="3" Grid.Column="0" Content="File Classification:"/>
                         <TextBox x:Name="txtClassification"
-                                 Grid.Row="3" Grid.Column="1"
-                                 Text="Unclassified"/>
+                                 Grid.Row="3" Grid.Column="1"/>
 
                         <Label Grid.Row="4" Grid.Column="0" Content="Media Used:"/>
                         <TextBox x:Name="txtMediaUsed"
-                                 Grid.Row="4" Grid.Column="1"
-                                 Text="Aegis Fortress L3 - 121400002465"/>
+                                 Grid.Row="4" Grid.Column="1"/>
 
                         <Label Grid.Row="5" Grid.Column="0" Content="Justification:"/>
                         <TextBox x:Name="txtJustification"
-                                 Grid.Row="5" Grid.Column="1"
-                                 Text="NA"/>
+                                 Grid.Row="5" Grid.Column="1"/>
 
                         <Label Grid.Row="6" Grid.Column="0" Content="Scan/Review Verification:"/>
                         <TextBox x:Name="txtScanVerify"
-                                 Grid.Row="6" Grid.Column="1"
-                                 Text="Justin M Dobson"/>
+                                 Grid.Row="6" Grid.Column="1"/>
 
                     </Grid>
                 </StackPanel>
@@ -648,6 +654,11 @@ $txtClassification = $Window.FindName("txtClassification")
 $txtMediaUsed      = $Window.FindName("txtMediaUsed")
 $txtJustification  = $Window.FindName("txtJustification")
 $txtScanVerify     = $Window.FindName("txtScanVerify")
+
+# DTA logging profiles
+$cbProfile        = $Window.FindName("cbProfile")
+$btnSaveProfile   = $Window.FindName("btnSaveProfile")
+$btnDeleteProfile = $Window.FindName("btnDeleteProfile")
 
 # Status + buttons
 $txtStatus = $Window.FindName("txtStatus")
