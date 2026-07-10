@@ -1336,6 +1336,41 @@ function Copy-Files {
 # BUTTON HANDLERS
 # ============================
 
+function Show-FolderBrowser {
+    param([string]$InitialPath)
+
+    $dialog = New-Object System.Windows.Forms.FolderBrowserDialog
+    $dialog.Description = "Select a folder"
+    if ($InitialPath -and (Test-Path $InitialPath)) {
+        $dialog.SelectedPath = $InitialPath
+    }
+
+    if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+        return $dialog.SelectedPath
+    }
+    return $null
+}
+
+$btnBrowseSource_Commercial.Add_Click({
+    $selected = Show-FolderBrowser -InitialPath $txtSource_Commercial.Text
+    if ($selected) { $txtSource_Commercial.Text = $selected }
+})
+
+$btnBrowseDest_Commercial.Add_Click({
+    $selected = Show-FolderBrowser -InitialPath $txtDest_Commercial.Text
+    if ($selected) { $txtDest_Commercial.Text = $selected }
+})
+
+$btnBrowseSource_MPN.Add_Click({
+    $selected = Show-FolderBrowser -InitialPath $txtSource_MPN.Text
+    if ($selected) { $txtSource_MPN.Text = $selected }
+})
+
+$btnBrowseDest_MPN.Add_Click({
+    $selected = Show-FolderBrowser -InitialPath $txtDest_MPN.Text
+    if ($selected) { $txtDest_MPN.Text = $selected }
+})
+
 $btnRun.Add_Click({
     Write-Status "Starting transfer..."
     Copy-Files
