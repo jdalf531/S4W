@@ -1164,18 +1164,31 @@ function Copy-Files {
             }, "Normal")
         }
 
-        # Look back up to 7 days for an orphaned .partial from an interrupted transfer
-        # that crossed a midnight boundary before today's dated folder existed. Keyed
-        # by relative path so the per-file loop below is an O(1) hashtable lookup,
-        # not a repeated network Test-Path per file.
+        # Look back up to 7 days -- the same window the archive sweep uses, since
+        # anything older is already moved to Archive by then -- for two things:
+        # (1) an orphaned .partial from an interrupted transfer that crossed a
+        #     midnight boundary before today's dated folder existed, and
+        # (2) a file already fully transferred in a previous day's dated folder,
+        #     so an unchanged re-run doesn't needlessly re-copy it into today's
+        #     folder. Both keyed by relative path so the per-file loop below is
+        #     an O(1) hashtable lookup, not a repeated network Test-Path per file.
         $orphanedPartials = @{}
+        $completedElsewhere = @{}
         for ($daysAgo = 1; $daysAgo -le 7; $daysAgo++) {
             $candidateDateFolder = Join-Path $DstUserRoot ((Get-Date).AddDays(-$daysAgo).ToString("yyyyMMdd"))
             if (-not (Test-Path $candidateDateFolder)) { continue }
-            Get-ChildItem -Path $candidateDateFolder -Recurse -File -Filter "*.partial" -ErrorAction SilentlyContinue | ForEach-Object {
-                $relPath = $_.FullName.Substring($candidateDateFolder.Length).TrimStart("\", "/") -replace '\.partial$', ''
-                if (-not $orphanedPartials.ContainsKey($relPath)) {
-                    $orphanedPartials[$relPath] = $_.FullName
+            Get-ChildItem -Path $candidateDateFolder -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object {
+                if ($_.Name.EndsWith(".partial")) {
+                    $relPath = $_.FullName.Substring($candidateDateFolder.Length).TrimStart("\", "/") -replace '\.partial$', ''
+                    if (-not $orphanedPartials.ContainsKey($relPath)) {
+                        $orphanedPartials[$relPath] = $_.FullName
+                    }
+                }
+                elseif (-not $_.Name.EndsWith(".partial.meta")) {
+                    $relPath = $_.FullName.Substring($candidateDateFolder.Length).TrimStart("\", "/")
+                    if (-not $completedElsewhere.ContainsKey($relPath)) {
+                        $completedElsewhere[$relPath] = $_
+                    }
                 }
             }
         }
@@ -1205,6 +1218,12 @@ function Copy-Files {
                     continue
                 }
                 Write-BackgroundStatus "(overwrite) File exists, source is newer: $relativePath"
+            }
+            elseif ($completedElsewhere.ContainsKey($relativePath) -and $completedElsewhere[$relativePath].LastWriteTimeUtc -ge $file.LastWriteTimeUtc) {
+                Write-BackgroundStatus "(skip) Already transferred in a previous dated folder: $relativePath"
+                $filesSkipped++
+                Update-BackgroundProgress
+                continue
             }
 
             $progressCallback = {
