@@ -1,7 +1,7 @@
 # MPN DTA Tool - Codebase Onboarding
 
 ## Project Overview
-**MPN DTA Tool** (Don't Copy That Floppy) is a PowerShell-based GUI application for securely transferring files between drives with comprehensive logging, hash verification, and compliance tracking.
+**MPN DTA Tool** is a PowerShell-based GUI application for securely transferring files between drives with comprehensive logging, hash verification, and compliance tracking.
 
 ## Tech Stack
 - **Language**: PowerShell 5.1+

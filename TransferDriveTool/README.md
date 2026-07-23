@@ -1,6 +1,6 @@
 # MPN DTA Tool - Secure File Transfer Utility
 
-> **"Don't Copy That Floppy"** - A PowerShell-based GUI application for secure, compliant file transfers between drives with comprehensive logging, hash verification, and audit trails.
+> A PowerShell/WPF GUI for moving files between an offline "Commercial" system, a physical transfer drive, and the MPN network, with resumable transfers, hash verification, and a full compliance audit trail.
 
 ![License](https://img.shields.io/badge/license-Proprietary-blue)
 ![PowerShell](https://img.shields.io/badge/PowerShell-5.1+-blue)
@@ -15,7 +15,7 @@
 - [Quick Start](#quick-start)
 - [Usage](#usage)
 - [Architecture](#architecture)
-- [API Reference](#api-reference)
+- [Function Reference](#function-reference)
 - [Compliance & Auditing](#compliance--auditing)
 - [Troubleshooting](#troubleshooting)
 - [Contributing](#contributing)
@@ -23,60 +23,80 @@
 
 ## 🎯 Overview
 
-The **MPN DTA Tool** is a production-grade file transfer application designed for enterprises requiring secure, auditable file transfers with compliance tracking. Built in PowerShell with a modern WPF interface, it provides:
+The **MPN DTA Tool** moves files across an air-gapped boundary in two legs:
 
-- ✅ Real-time transfer progress monitoring
-- ✅ SHA-256 cryptographic verification
-- ✅ Comprehensive CSV audit trails
-- ✅ Designated Transfer Agent (DTA) tracking
-- ✅ Timestamp-based deduplication
-- ✅ Classification and justification logging
-- ✅ Automatic retry logic with failure recovery
+1. **Commercial → Drive** — copies files from a local "Viper" source folder onto a physical transfer drive, organized into a dated folder per run.
+2. **Drive → MPN** — copies files from that same transfer drive onto the MPN network share.
 
-**Current Version**: V3 (January 2026)
+The same machine is never expected to do both: at launch, the tool detects whether it's domain-joined and only loads the relevant tab —
+
+- **Not domain-joined** (a commercial-side box) → only the **Commercial → Drive** tab loads.
+- **Domain-joined to a domain starting with `EUR`** (an MPN-side box) → only the **Drive → MPN** tab loads.
+- Any other domain → the tool refuses to start and shows an error, rather than guessing.
+
+This avoids the tool ever probing a network share it has no business reaching on a given machine.
+
+Core guarantees:
+
+- ✅ The UI stays responsive during a transfer — copying runs on a background thread, not the UI thread.
+- ✅ Large files resume from where they left off after a network drop, an app restart, or even a crash overnight — no re-copying from byte zero.
+- ✅ Every file is SHA-256 hash-verified before it's considered "copied."
+- ✅ Every copy is logged to a CSV audit trail with DTA identity, classification, and justification.
+- ✅ Data older than a week is automatically swept into an `Archive` subfolder so old data doesn't clutter the working folders or get re-pushed to MPN.
+
+**Current Version**: V3
 
 ## ✨ Features
 
 ### Core Transfer Capabilities
-- **Multi-file transfers** with intelligent filtering
-- **Retry logic** (up to 3 automatic attempts)
-- **Timestamp comparison** to prevent overwriting newer files
-- **Recursive directory creation** for complex directory structures
-- **Real-time progress tracking** with percentage and file counters
+- **Two dedicated workflows** (Commercial → Drive, Drive → MPN), auto-selected by machine domain at launch.
+- **Preset users** per workflow, each with fixed Source/Destination paths, selectable from a dropdown.
+- **Folder Browse buttons** on every Source/Destination field to pick a path manually.
+- **Dated destination folders** (`yyyyMMdd`) — every run's output lands in its own dated folder, never mixed with a previous day's.
+- **Timestamp comparison** — a file is skipped if the destination copy is already the same age or newer than the source.
+- **Non-blocking transfers** — the copy loop runs on a background PowerShell runspace; the window stays responsive (movable, resizable, and the Close button works) throughout, even on a slow multi-gigabyte network copy.
+- **Resumable, chunked copy engine** — copies in 4 MB chunks via a temporary `.partial` file; if interrupted, the *next* attempt resumes from the last completed chunk instead of restarting the whole file. Resume works:
+  - across automatic retries within the same run,
+  - across closing and relaunching the app,
+  - across a midnight boundary (a 7-day lookback finds and adopts a `.partial` left in a previous day's dated folder).
+- **Automatic retry with backoff** on a failed chunk: retries at 2s, 5s, 15s, 30s, then every 60s, up to 15 attempts, before giving up on that file and moving to the next.
 
 ### Security & Verification
-- **SHA-256 hash verification** for data integrity
-- **Source-to-destination validation** with mismatch detection
-- **Read-only source verification** option
-- **Classification level tracking** for data sensitivity
+- **SHA-256 hash verification**, computed incrementally while the file is copied (no separate full read-through pass), then confirmed against the written destination file.
+- **Atomic, safe writes** — a file is written to `<name>.partial` and only renamed onto the real destination filename once its hash is verified; the real destination is never left in a half-written state.
+- **Classification level tracking** for data sensitivity, recorded on every transfer.
+
+### Automatic Archiving (Commercial mode only)
+- **Drive-side sweep**: dated folders on the transfer drive older than 1 week are moved into an `Archive` subfolder under that user's folder.
+- **Source-side sweep**: items in the local Viper source folder are archived once **both** their creation date and modified date are more than a week old — a file just copied in (which keeps its original modified date) isn't mistaken for something stale.
+- **Archive folders are excluded** from every transfer scan, so archived data is never re-copied or re-pushed to MPN.
+- Both sweeps run once, automatically, at launch.
 
 ### Compliance & Auditing
-- **CSV audit logs** with complete transfer metadata
-- **DTA identification** - tracks who performed the transfer
-- **Manager attribution** - records supervising manager
-- **Justification tracking** - documents business reasons
-- **Scan/verify status** - records additional verification steps
-- **Timestamped entries** - precise operation records
-- **System identification** - source and destination tracking
+- **CSV audit logs** with complete transfer metadata (see [CSV Audit Trail Format](#csv-audit-trail-format)).
+- **DTA identification** — tracks who performed the transfer.
+- **Manager attribution** — records the supervising manager.
+- **Justification tracking** — documents the business reason for the transfer.
+- **Scan/verify status** — records additional verification steps.
+- **Timestamped entries**, sequentially numbered per calendar year.
 
 ### User Interface
-- **Dark theme** professional design (#1E1E1E with blue accents)
-- **Tab-based workflow** for different transfer scenarios
-- **Live status log** with color-coded messages
-- **Progress bar** with detailed statistics
-- **Dropdown selectors** for preconfigured users and options
-- **Window size**: 900x1050 (resizable)
+- **Dark theme** with a domain-appropriate tab shown automatically (the other tab is hidden, not just disabled).
+- **Dual progress display** — an overall "files done / total" bar, plus a second bar showing the current file's byte progress (useful for a single very large file).
+- **Live status log**, mirrored to a persistent log file on disk.
+- **Window size**: 900×1050 (resizable), console window hidden on launch (it's a GUI tool).
 
 ## 🔧 System Requirements
 
 | Requirement | Specification |
 |---|---|
 | **OS** | Windows 7+ (Windows 10/11 recommended) |
-| **PowerShell** | 5.1 or later |
-| **.NET Framework** | 3.5+ (for WPF) |
+| **PowerShell** | Windows PowerShell 5.1 |
+| **.NET Framework** | 3.5+ (for WPF and `System.Windows.Forms`) |
 | **RAM** | 512 MB minimum, 2 GB recommended |
 | **Disk Space** | Variable (based on files being transferred) |
-| **Permissions** | Read access to source, Write access to destination |
+| **Permissions** | Read access to source, write access to destination |
+| **Network** | A machine running the Drive → MPN tab must be domain-joined to a domain starting with `EUR` and able to reach the MPN share |
 
 ## 📦 Installation
 
@@ -84,27 +104,26 @@ The **MPN DTA Tool** is a production-grade file transfer application designed fo
 ```powershell
 # Clone the repository
 git clone https://github.com/jdalf531/S4W.git
-cd S4W
+cd S4W/TransferDriveTool
 
 # Run with bypass if execution policy is restricted
 powershell -ExecutionPolicy Bypass -File .\TransferDriveTool-V3.ps1
 ```
 
+The tool can also be run directly from a read-only external/removable drive — nothing it writes depends on the location of the script itself.
+
 ### Method 2: Scheduled Task (Windows)
-Create a scheduled task to run the tool at specific times:
 ```powershell
 # PowerShell (as Administrator)
 $scriptPath = "C:\Path\To\TransferDriveTool-V3.ps1"
 $taskName = "MPN DTA Tool"
 
-# Create task
 $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`""
 $trigger = New-ScheduledTaskTrigger -Daily -At 02:00AM
 Register-ScheduledTask -Action $action -Trigger $trigger -TaskName $taskName -RunLevel Highest
 ```
 
 ### Method 3: Desktop Shortcut
-Create a Windows shortcut with:
 ```
 Target: powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\Path\To\TransferDriveTool-V3.ps1"
 Start in: C:\Path\To\
@@ -112,67 +131,54 @@ Start in: C:\Path\To\
 
 ## 🚀 Quick Start
 
-1. **Launch the application**:
-   ```powershell
-   .\TransferDriveTool-V3.ps1
-   ```
+1. **Launch the application** — the console window hides itself automatically, and only the tab relevant to this machine (Commercial → Drive, or Drive → MPN) will be visible.
 
 2. **Fill in transfer details**:
-   - Select a DTA user from the dropdown
-   - Specify source path (e.g., `C:\SourceFiles`)
-   - Specify destination path (e.g., `D:\BackupDrive`)
-   - Enter manager name
-   - Set classification level
-   - Choose media type
-   - Add justification for the transfer
+   - Select a DTA user from the dropdown (auto-fills Source/Destination), or use the **Browse** buttons to pick paths manually.
+   - Enter manager name, classification, media used, and justification.
 
 3. **Execute transfer**:
-   - Click "Run" button
-   - Monitor progress in real-time
-   - Review status log for details
+   - Click **Run**. Run and Close are disabled while a transfer is in progress and re-enable automatically when it finishes.
+   - Watch both progress bars and the live status log.
 
-4. **Review audit log**:
-   - Check the CSV audit trail for compliance verification
-   - Default location: same directory as script
+4. **Review the audit log**:
+   - Commercial → Drive tab: `E:\DTA\Logging\DataTransferLog.csv`
+   - Drive → MPN tab: `C:\VIPER\DTA\DataTransferLog.csv`
 
 ## 📖 Usage
 
-### Basic File Transfer
-
-```powershell
-# The UI guides you through this, but the workflow is:
-1. Source Path: "C:\Documents\ToTransfer"
-2. Destination Path: "E:\BackupDrive"
-3. DTA User: [Select from dropdown]
-4. Manager: "John Smith"
-5. Classification: "Confidential"
-6. Justification: "Monthly data backup - Business continuity"
-7. Click "Run"
-```
-
 ### Understanding the Status Log
 
-The status log displays:
-- `✓ Prepared dated destination folder: E:\BackupDrive\20250106`
-- `✓ Found 156 files to process`
-- `⊙ Processing: document.docx (2.3 MB)`
-- `✓ Copied and verified: document.docx`
-- `⊘ Skipped (destination newer): old_file.txt`
-- `✗ Error: permission_denied.pdf - Access denied`
-- `Summary: 150 copied, 5 skipped, 1 error in 2m 45s`
+A typical run looks like:
+```
+[2026-07-10 10:21:19] Archive sweep: scanning drive folders for dated folders older than 1 week...
+[2026-07-10 10:21:19] Drive archive sweep complete. 0 folder(s) archived.
+[2026-07-10 10:21:20] Loaded preset for Ben
+[2026-07-10 10:21:20] Starting transfer...
+[2026-07-10 10:21:20] Creating destination folder: E:\DTA\Ben\20260710
+[2026-07-10 10:21:20] Scanning source files for changes...
+[2026-07-10 10:21:21] (skip) File exists (destination newer/same): old_report.docx
+[2026-07-10 10:21:22] Copied and hash-verified: report.xlsx
+[2026-07-10 10:21:22] Logged: report.xlsx
+[2026-07-10 10:21:23] Transfer complete.
+[2026-07-10 10:21:23] Summary: Total=2, Copied=1, Skipped=1, Elapsed=00:00:02.97
+```
+
+If a copy is interrupted and resumed later, you'll also see:
+```
+[2026-07-10 10:22:05] Adopting orphaned partial copy for report.xlsx (resuming across a day boundary)
+```
 
 ### CSV Audit Trail Format
 
-The audit log contains these columns:
+The audit log header (both tabs use the same columns):
 ```
-DTAName, Manager, SourceSystem, DestSystem, FileName, Classification, FileSize, 
-Checksum, MediaUsed, Justification, ScanVerify, Timestamp
+LogEntryNumber,DTAName,AuthorizingManager,DateTimeUTC,SourceSystem,DestinationSystem,FileName,FileClassification,FileSize,SHA256,MediaUsed,Justification,ScanReviewVerification
 ```
 
 Example entry:
 ```
-jdalf531, John Smith, C:\Documents, E:\BackupDrive, report.xlsx, Confidential, 
-2457600, a3f9e8c2d1b5..., USB_DRIVE, "Monthly financial backup", Yes, 2025-01-06 14:32:45
+"2026-014","jdalf531","John Smith","2026-07-10 14:32Z","C:\Viper\DTA\Ben","E:\DTA\Ben","report.xlsx","Confidential","2,400 KB","A3F9E8C2D1B5...","USB_DRIVE","Monthly financial backup","Yes"
 ```
 
 ## 🏗️ Architecture
@@ -180,175 +186,83 @@ jdalf531, John Smith, C:\Documents, E:\BackupDrive, report.xlsx, Confidential,
 ### Project Structure
 ```
 S4W/
-├── TransferDriveTool-V3.ps1      # Main application (single-file monolithic)
-├── ONBOARDING.md                 # Development onboarding guide
-├── README.md                      # This file
-└── .git/                          # Git repository metadata
+└── TransferDriveTool/
+    ├── TransferDriveTool-V3.ps1   # Main application (single-file, monolithic by design)
+    ├── ONBOARDING.md              # Development onboarding guide
+    └── README.md                  # This file
 ```
 
-### Core Components
-
-#### 1. **XAML UI Definition** (Lines 1-300+)
-Defines the WPF interface with:
-- Main window and grid layout
-- Tab control for different workflows
-- TextBox and ComboBox controls
-- Progress bar and status log
-- Control buttons (Run, Close)
-- Dark theme styling
-
-#### 2. **Configuration Module**
-```powershell
-Get-CommonConfig
-  ├─ Returns: User list, default paths
-  └─ Called: On startup
-```
-
-#### 3. **Transfer Engine**
-```powershell
-Copy-Files (Main orchestrator)
-  ├─ Copy-WithRetry (3 attempts)
-  ├─ Get-FileHashSHA256 (Verification)
-  ├─ Add-CsvLogEntry (Audit logging)
-  └─ Update-ProgressUI (Status updates)
-```
-
-#### 4. **Logging System**
-```powershell
-Initialize-LogFile
-Add-CsvLogEntry
-  └─ Output: CSV audit trail
-```
+The tool is deliberately kept as a single `.ps1` file — it's copied directly onto commercial-side and MPN-side machines, including read-only removable drives, and shouldn't depend on a second file being present alongside it.
 
 ### Data Flow
 
 ```
-User Input
+Launch
     ↓
-Validation
+Detect domain → pick ToolMode (Commercial / MPN) → hide the other tab
     ↓
-Preparation (Create dated folder, scan source)
+[Commercial mode only] Archive sweep (drive + source, >1 week old)
     ↓
-File Loop:
-  ├─ Check timestamps (skip if destination newer)
-  ├─ Create destination directories
-  ├─ Copy with retry (up to 3 attempts)
-  ├─ Verify SHA-256 hash
-  ├─ Log to CSV
-  └─ Update progress UI
+User fills in fields, clicks Run
     ↓
-Summary Report
+Validate inputs, scan source files, snapshot UI values
     ↓
-CSV Audit Trail
+Disable Run/Close, hand the file list to a background runspace
+    ↓
+Background runspace, per file:
+  ├─ Check for an orphaned .partial from a prior day (adopt if it matches)
+  ├─ Skip if destination is already newer/equal
+  ├─ Copy-FileResumable (chunked, resumable, hash-verified)
+  ├─ Add-CsvLogEntry
+  └─ Report progress back to the UI thread
+    ↓
+Completion timer detects the runspace finished (or force-recovers on a stall)
+    ↓
+Re-enable Run/Close, show summary
 ```
 
-## 🔌 API Reference
-
-### Core Functions
+## 🔌 Function Reference
 
 #### `Copy-Files`
-Main transfer orchestrator function.
+Main transfer orchestrator, called from the Run button. Validates inputs, scans the source folder, snapshots the UI fields needed for logging, then builds and starts a background PowerShell runspace to run the actual transfer loop, reporting progress back to the UI thread. Includes a completion timer that re-enables the UI when the background work finishes, and force-recovers it after a 10-minute stall as a safety net.
 
-**Parameters**:
-- `$sourceFolder` - Source directory path
-- `$destinationFolder` - Destination directory path
-- `$dtaName` - Designated Transfer Agent identifier
-- `$manager` - Supervising manager name
-- `$sourceSystem` - Source system identifier
-- `$destSystem` - Destination system identifier
-- `$classification` - Data classification level
-- `$mediaType` - Transfer media type
-- `$justification` - Business justification
-- `$scanVerify` - Scan/verify status
-
-**Returns**: `[bool]` - Success/failure status
-
-#### `Copy-WithRetry`
-Handles single file copy with automatic retry logic.
-
-**Parameters**:
-- `$sourcePath` - File source path
-- `$destPath` - File destination path
-- `$maxRetries` - Maximum retry attempts (default: 3)
-
-**Returns**: `[bool]` - Copy success status
-
-#### `Get-FileHashSHA256`
-Computes SHA-256 hash for a file.
-
-**Parameters**:
-- `$filePath` - Path to file
-
-**Returns**: `[string]` - Hexadecimal hash value
-
-#### `Initialize-LogFile`
-Creates and initializes the CSV audit log.
-
-**Parameters**:
-- `$logPath` - Output log file path
-
-**Returns**: `[string]` - Full path to created log
+#### `Copy-FileResumable`
+```powershell
+Copy-FileResumable -Source <path> -Destination <path> [-ChunkSizeBytes <int> = 4MB] [-ProgressCallback <scriptblock>] [-RetryDelaySeconds <int[]> = @(2,5,15,30,60)] [-MaxAttempts <int> = 15]
+```
+Copies a single file in chunks via a `<Destination>.partial` file, hashing the source incrementally as it reads. Only renames `.partial` onto the real destination once the copy is complete and its hash is verified. Returns `[PSCustomObject]@{ Success; SourceHash; DestHash; Error }`. A sidecar `<Destination>.partial.meta` records the source's length and modified time so an interrupted copy can resume later, even across an app restart.
 
 #### `Add-CsvLogEntry`
-Appends a single transfer record to the audit log.
+Appends one row to the CSV audit trail (path depends on the active tab — see [Quick Start](#quick-start)) with a sequential per-year log number.
 
-**Parameters**:
-- `$logPath` - Log file path
-- `$dtaName`, `$manager`, `$classification`, ... - Metadata fields
+#### `Invoke-DriveArchiveSweep` / `Invoke-SourceArchiveSweep`
+Run once at launch in Commercial mode. Move dated drive folders and stale local source items (respectively) older than 1 week into an `Archive` subfolder, which is then excluded from all future transfer scans.
 
-**Returns**: None
-
-#### `Update-ProgressUI`
-Refreshes the progress bar and statistics display.
-
-**Parameters**:
-- `$current` - Current file count
-- `$total` - Total files
-- `$copied` - Files successfully copied
-- `$skipped` - Files skipped
-
-**Returns**: None
-
-### Configuration Functions
-
-#### `Get-CommonConfig`
-Retrieves application configuration.
-
-**Returns**: `[hashtable]` with keys:
+#### `Show-FolderBrowser`
 ```powershell
-@{
-    UserList = @("User1", "User2", "User3")
-    DefaultPath = "C:\Transfers"
-}
+Show-FolderBrowser -InitialPath <string>
 ```
+Opens a `System.Windows.Forms.FolderBrowserDialog` pre-populated with the given path if valid, and returns the chosen folder (or `$null` on Cancel). Backs all four Browse buttons.
+
+#### `Write-Status`
+Appends a timestamped line to the on-screen status log and to the persistent log file at `C:\VIPER\DTA\TransferLog_<timestamp>.txt`. Used for UI-thread messages; the background runspace uses its own `Write-BackgroundStatus`, which marshals the same append back onto the UI thread.
 
 ## 📋 Compliance & Auditing
 
 ### DTA (Designated Transfer Agent) Tracking
-Every transfer is attributed to a specific user (DTA) from the preconfigured user list. This enables accountability and traceability.
+Every transfer is attributed to a specific user (DTA) from the preconfigured user list, enabling accountability and traceability.
 
 ### Manager Attribution
 Transfers are attributed to a supervising manager, establishing an audit chain of responsibility.
 
 ### Data Classification
-Supports multiple classification levels:
-- **Public** - Unrestricted data
-- **Internal** - Company-internal use only
-- **Confidential** - Restricted to authorized personnel
-- **Restricted** - Highest sensitivity level
+Classification is a free-text field entered per transfer (e.g. Public, Internal, Confidential, Restricted) and recorded in the CSV audit trail.
 
 ### Timestamp-Based Deduplication
-Files are automatically skipped if the destination already has an equal or newer version. This prevents:
-- Unnecessary duplication
-- Overwriting newer data
-- Bandwidth waste
+Files are automatically skipped if the destination already has an equal or newer version, preventing unnecessary duplication, overwriting newer data, and wasted transfer time.
 
 ### Hash Verification
-Every file receives SHA-256 verification:
-- Computed immediately after copy
-- Compared against source
-- Logged for audit trail
-- Mismatches generate warnings (non-blocking)
+Every file receives SHA-256 verification, computed while copying and confirmed against the finished destination file, before it's logged as copied. A mismatch discards the attempt and retries rather than logging a bad copy.
 
 ## 🔍 Troubleshooting
 
@@ -371,52 +285,34 @@ New-Item -Path "D:\Dest" -ItemType Directory -Force
 
 **Solution**:
 ```powershell
-# Check current policy
 Get-ExecutionPolicy
-
-# For current process only (temporary)
 powershell -ExecutionPolicy Bypass -File .\TransferDriveTool-V3.ps1
-
-# To set permanently (requires admin)
 Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
 ```
 
-### Issue: WPF Window Won't Display
+### Issue: "This machine's domain is not recognized" error on launch
 
-**Cause**: Missing .NET Framework or WPF components
+**Cause**: The machine is domain-joined to a domain that doesn't start with `EUR`, and isn't a non-domain-joined commercial box either — the tool refuses to guess which workflow applies.
 
-**Solution**:
-```powershell
-# Check .NET installation
-Get-NetFrameworkVersion  # Requires .NET 3.5+
+**Solution**: Contact IT to confirm which workflow this machine should run; the tool is only meant to run on a commercial (non-domain) box or a `EUR*`-domain box.
 
-# On Windows 10/11, enable via:
-# Settings > Apps > Apps and Features > Optional features
-# Search for ".NET Framework 3.5" and install
-```
+### Issue: A transfer seems stuck / Close doesn't respond
+
+**Cause**: The background transfer thread hasn't signaled completion.
+
+**Solution**: Wait — after 10 minutes with no progress, the tool automatically force-recovers the UI, attempts to stop the stalled transfer, and logs a warning. If this happens, manually verify the destination files, since the transfer's true state at that point is unknown.
 
 ### Issue: Hash Mismatch Warnings
 
-**Cause**: File modified during transfer or network corruption
+**Cause**: File modified during transfer, or network/disk corruption.
 
-**Solution**:
-- Review the CSV log for affected files
-- Retry the transfer
-- If persistent, verify source file integrity
-- Check destination disk for errors
+**Solution**: The tool automatically retries on a mismatch; if it still fails after all retries, review the status log for the affected file and verify source file integrity.
 
 ### Issue: Slow Transfer Speed
 
-**Cause**: 
-- Network/disk I/O bottleneck
-- Antivirus scanning
-- System resource contention
+**Cause**: Network/disk I/O bottleneck, antivirus scanning, or system resource contention.
 
-**Solution**:
-- Temporarily exclude folder from antivirus scan
-- Run during off-peak hours
-- Check disk health: `chkdsk E: /F` (with /F requires reboot)
-- Monitor Task Manager for resource usage
+**Solution**: Temporarily exclude the folder from antivirus scanning, run during off-peak hours, and check disk health.
 
 ## 🤝 Contributing
 
@@ -424,11 +320,7 @@ This is a proprietary tool. For bug reports or enhancement requests, contact the
 
 ### Development Setup
 
-See [ONBOARDING.md](ONBOARDING.md) for detailed development documentation including:
-- Code structure
-- Function references
-- Customization points
-- Enhancement guidelines
+See [ONBOARDING.md](ONBOARDING.md) for development documentation.
 
 ## 📄 License
 
@@ -440,7 +332,6 @@ This software is proprietary and confidential. Unauthorized copying, modificatio
 
 For issues, questions, or feature requests, please contact the development team.
 
-**Project**: MPN DTA Tool (Don't Copy That Floppy)  
-**Repository**: https://github.com/jdalf531/S4W  
-**Last Updated**: January 2026  
+**Project**: MPN DTA Tool
+**Repository**: https://github.com/jdalf531/S4W
 **Maintainer**: Justin Dobson
