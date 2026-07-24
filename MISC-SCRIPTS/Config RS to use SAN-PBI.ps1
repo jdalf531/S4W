@@ -134,3 +134,48 @@ function New-UrlAclCommandArgs {
         }
     }
 }
+
+function Get-CertHashFromSslCertOutput {
+    param([Parameter(Mandatory)][string[]]$NetshOutput)
+
+    foreach ($line in $NetshOutput) {
+        if ($line -match '^\s*Certificate Hash\s*:\s*(?<hash>[0-9a-fA-F]+)') {
+            return $Matches['hash']
+        }
+    }
+    return $null
+}
+
+function Test-CertificateForSan {
+    param(
+        [Parameter(Mandatory)][System.Security.Cryptography.X509Certificates.X509Certificate2]$Certificate,
+        [Parameter(Mandatory)][string]$Hostname
+    )
+
+    $failures = [System.Collections.Generic.List[string]]::new()
+
+    if (-not $Certificate.HasPrivateKey) {
+        $failures.Add('Certificate has no private key.')
+    }
+
+    if ($Certificate.Issuer -eq $Certificate.Subject) {
+        $failures.Add('Certificate appears to be self-signed (Issuer equals Subject).')
+    }
+
+    $sanExtension = $Certificate.Extensions | Where-Object { $_.Oid.FriendlyName -eq 'Subject Alternative Name' } | Select-Object -First 1
+    $sanNames = @()
+    if ($sanExtension) {
+        $sanText = $sanExtension.Format($true)
+        $sanNames = [regex]::Matches($sanText, 'DNS Name=(?<name>\S+)') | ForEach-Object { $_.Groups['name'].Value }
+    }
+
+    if ($Hostname -notin $sanNames) {
+        $failures.Add("Certificate SAN list does not include '$Hostname'. Found: $($sanNames -join ', ')")
+    }
+
+    return [PSCustomObject]@{
+        IsValid  = ($failures.Count -eq 0)
+        Failures = $failures
+        SanNames = $sanNames
+    }
+}

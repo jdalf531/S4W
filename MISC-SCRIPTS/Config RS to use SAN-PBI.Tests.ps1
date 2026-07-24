@@ -135,3 +135,60 @@ Describe 'New-UrlAclCommandArgs' {
         $wopiCmd.Args | Should -Be @('http', 'delete', 'urlacl', 'url=https://old.contoso.com:443/wopi')
     }
 }
+
+Describe 'Get-CertHashFromSslCertOutput' {
+    It 'extracts the certificate hash line' {
+        $fixture = @(
+            '    SSL Certificate bound to IP:port                  : 0.0.0.0:443'
+            '    Application ID                                    : {00000000-0000-0000-0000-000000000000}'
+            '    Certificate Hash                                   : a1b2c3d4e5f60718293a4b5c6d7e8f901234567'
+            '    Certificate Store Name                             : MY'
+        )
+
+        Get-CertHashFromSslCertOutput -NetshOutput $fixture | Should -Be 'a1b2c3d4e5f60718293a4b5c6d7e8f901234567'
+    }
+
+    It 'returns null when there is no bound certificate' {
+        Get-CertHashFromSslCertOutput -NetshOutput @('The system cannot find the file specified.') | Should -BeNullOrEmpty
+    }
+}
+
+Describe 'Test-CertificateForSan' {
+    BeforeAll {
+        $script:TestCert = New-SelfSignedCertificate -DnsName 'reports.contoso.com', 'alt.contoso.com' `
+            -CertStoreLocation 'Cert:\CurrentUser\My' -KeyExportPolicy Exportable -NotAfter (Get-Date).AddDays(1)
+    }
+
+    AfterAll {
+        Remove-Item -LiteralPath "Cert:\CurrentUser\My\$($script:TestCert.Thumbprint)" -Force -ErrorAction SilentlyContinue
+    }
+
+    It 'flags a self-signed certificate as invalid' {
+        $result = Test-CertificateForSan -Certificate $script:TestCert -Hostname 'reports.contoso.com'
+
+        $result.IsValid | Should -BeFalse
+        $result.Failures | Should -Contain 'Certificate appears to be self-signed (Issuer equals Subject).'
+    }
+
+    It 'reports when the hostname is missing from the SAN list' {
+        $result = Test-CertificateForSan -Certificate $script:TestCert -Hostname 'nomatch.contoso.com'
+
+        ($result.Failures -join ' ') | Should -Match "does not include 'nomatch.contoso.com'"
+    }
+
+    It 'lists the SAN names it found on the certificate' {
+        $result = Test-CertificateForSan -Certificate $script:TestCert -Hostname 'alt.contoso.com'
+
+        $result.SanNames | Should -Contain 'reports.contoso.com'
+        $result.SanNames | Should -Contain 'alt.contoso.com'
+    }
+
+    It 'flags a certificate with no private key as invalid' {
+        $publicOnlyBytes = $script:TestCert.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Cert)
+        $publicOnlyCert = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($publicOnlyBytes)
+
+        $result = Test-CertificateForSan -Certificate $publicOnlyCert -Hostname 'reports.contoso.com'
+
+        $result.Failures | Should -Contain 'Certificate has no private key.'
+    }
+}
