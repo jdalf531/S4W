@@ -75,3 +75,63 @@ function Get-TlsPortFromConfig {
 
     return $null
 }
+
+function Get-ReservedUrlsFromNetshOutput {
+    # Note: NetshOutput is intentionally not marked [Parameter(Mandatory)] here.
+    # PowerShell's Mandatory validation rejects string[] arguments containing any
+    # empty-string element, but real `netsh http show urlacl` output always
+    # includes blank lines.
+    param([string[]]$NetshOutput)
+
+    $reserved = foreach ($line in $NetshOutput) {
+        if ($line -match '^\s*Reserved URL\s*:\s*(?<url>\S+)') {
+            $Matches['url'].TrimEnd('/')
+        }
+    }
+    return $reserved
+}
+
+function Test-UrlAclConflict {
+    # Note: NetshOutput is intentionally not marked [Parameter(Mandatory)] here.
+    # PowerShell's Mandatory validation rejects string[] arguments containing any
+    # empty-string element, but real `netsh http show urlacl` output always
+    # includes blank lines.
+    param(
+        [string[]]$NetshOutput,
+        [Parameter(Mandatory)][string]$Url
+    )
+
+    $reserved = Get-ReservedUrlsFromNetshOutput -NetshOutput $NetshOutput
+    return ($reserved | Where-Object { $_ -ieq $Url.TrimEnd('/') }).Count -gt 0
+}
+
+function New-UrlAclCommandArgs {
+    param(
+        [Parameter(Mandatory)][ValidateSet('add', 'delete')][string]$Action,
+        [Parameter(Mandatory)][string]$Hostname,
+        [Parameter(Mandatory)][int]$Port
+    )
+
+    return $script:PbirsUrlAclPaths | ForEach-Object {
+        $url = "https://$($Hostname):$($Port)/$_"
+        if ($Action -eq 'add') {
+            [PSCustomObject]@{
+                Path = $_
+                Url  = $url
+                Args = @(
+                    'http', 'add', 'urlacl',
+                    "url=$url",
+                    "user=$script:PbirsAccountName",
+                    "sddl=D:(A;;GX;;;$script:PbirsAccountSid)"
+                )
+            }
+        }
+        else {
+            [PSCustomObject]@{
+                Path = $_
+                Url  = $url
+                Args = @('http', 'delete', 'urlacl', "url=$url")
+            }
+        }
+    }
+}

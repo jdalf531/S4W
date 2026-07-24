@@ -78,3 +78,60 @@ Describe 'Get-TlsPortFromConfig' {
         Get-TlsPortFromConfig -ConfigXml $script:ConfigWithoutPort | Should -BeNullOrEmpty
     }
 }
+
+Describe 'Get-ReservedUrlsFromNetshOutput / Test-UrlAclConflict' {
+    BeforeAll {
+        $script:UrlAclFixture = @(
+            'URL Reservations:'
+            '-----------------'
+            ''
+            '    Reserved URL            : https://+:443/ReportServer/'
+            '        User: NT SERVICE\PowerBIReportServer'
+            '            Listen: Yes'
+            ''
+            '    Reserved URL            : https://old.contoso.com:443/ReportServer/'
+            '        User: NT SERVICE\PowerBIReportServer'
+            '            Listen: Yes'
+        )
+    }
+
+    It 'extracts reserved URLs with trailing slash trimmed' {
+        $urls = Get-ReservedUrlsFromNetshOutput -NetshOutput $script:UrlAclFixture
+
+        $urls | Should -Contain 'https://old.contoso.com:443/ReportServer'
+        $urls | Should -Contain 'https://+:443/ReportServer'
+    }
+
+    It 'detects a conflict for a URL that is already reserved' {
+        Test-UrlAclConflict -NetshOutput $script:UrlAclFixture -Url 'https://old.contoso.com:443/ReportServer' | Should -BeTrue
+    }
+
+    It 'reports no conflict for a URL that is not reserved' {
+        Test-UrlAclConflict -NetshOutput $script:UrlAclFixture -Url 'https://new.contoso.com:443/ReportServer' | Should -BeFalse
+    }
+}
+
+Describe 'New-UrlAclCommandArgs' {
+    It 'builds add commands for all four PBIRS paths with user/sddl' {
+        $commands = New-UrlAclCommandArgs -Action add -Hostname 'reports.contoso.com' -Port 443
+
+        $commands.Count | Should -Be 4
+        ($commands | Select-Object -ExpandProperty Path) | Should -Be @('ReportServer', 'Reports', 'PowerBI', 'wopi')
+
+        $reportServerCmd = $commands | Where-Object Path -eq 'ReportServer'
+        $reportServerCmd.Url | Should -Be 'https://reports.contoso.com:443/ReportServer'
+        $reportServerCmd.Args | Should -Be @(
+            'http', 'add', 'urlacl',
+            'url=https://reports.contoso.com:443/ReportServer',
+            'user=NT SERVICE\PowerBIReportServer',
+            'sddl=D:(A;;GX;;;S-1-5-80-1730998386-2757299892-37364343-1607169425-3512908663)'
+        )
+    }
+
+    It 'builds delete commands without user/sddl arguments' {
+        $commands = New-UrlAclCommandArgs -Action delete -Hostname 'old.contoso.com' -Port 443
+
+        $wopiCmd = $commands | Where-Object Path -eq 'wopi'
+        $wopiCmd.Args | Should -Be @('http', 'delete', 'urlacl', 'url=https://old.contoso.com:443/wopi')
+    }
+}
