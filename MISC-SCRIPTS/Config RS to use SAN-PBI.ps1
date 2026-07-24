@@ -77,11 +77,11 @@ function Get-TlsPortFromConfig {
 }
 
 function Get-ReservedUrlsFromNetshOutput {
-    # Note: NetshOutput is intentionally not marked [Parameter(Mandatory)] here.
-    # PowerShell's Mandatory validation rejects string[] arguments containing any
-    # empty-string element, but real `netsh http show urlacl` output always
-    # includes blank lines.
-    param([string[]]$NetshOutput)
+    # Note: NetshOutput keeps [Parameter(Mandatory)] (so a missing/null argument
+    # still fails fast) but adds [AllowEmptyString()], because real
+    # `netsh http show urlacl` output (and the test fixture) contains blank-line
+    # array elements, which Mandatory alone rejects.
+    param([Parameter(Mandatory)][AllowEmptyString()][string[]]$NetshOutput)
 
     $reserved = foreach ($line in $NetshOutput) {
         if ($line -match '^\s*Reserved URL\s*:\s*(?<url>\S+)') {
@@ -92,12 +92,11 @@ function Get-ReservedUrlsFromNetshOutput {
 }
 
 function Test-UrlAclConflict {
-    # Note: NetshOutput is intentionally not marked [Parameter(Mandatory)] here.
-    # PowerShell's Mandatory validation rejects string[] arguments containing any
-    # empty-string element, but real `netsh http show urlacl` output always
-    # includes blank lines.
+    # Note: NetshOutput keeps [Parameter(Mandatory)] plus [AllowEmptyString()] -
+    # see Get-ReservedUrlsFromNetshOutput above for why (blank-line elements in
+    # real netsh output and the test fixture).
     param(
-        [string[]]$NetshOutput,
+        [Parameter(Mandatory)][AllowEmptyString()][string[]]$NetshOutput,
         [Parameter(Mandatory)][string]$Url
     )
 
