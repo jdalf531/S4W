@@ -46,3 +46,32 @@ function Test-IsAdministrator {
     $principal = New-Object Security.Principal.WindowsPrincipal($identity)
     return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 }
+
+function Get-PbirsServiceInfo {
+    $service = Get-Service -Name $script:PbirsServiceName -ErrorAction SilentlyContinue
+    $configExists = Test-Path -LiteralPath $script:PbirsConfigPath
+
+    return [PSCustomObject]@{
+        ServiceFound = [bool]$service
+        Service      = $service
+        ConfigPath   = $script:PbirsConfigPath
+        ConfigExists = $configExists
+        IsReady      = ([bool]$service -and $configExists)
+    }
+}
+
+function Get-TlsPortFromConfig {
+    param([Parameter(Mandatory)][xml]$ConfigXml)
+
+    $wildcardUrl = $ConfigXml.SelectSingleNode("//UrlReservations[Application='ReportServerWebService']/URLs/URL[starts-with(UrlString, 'https://+:')]")
+
+    if (-not $wildcardUrl) {
+        return $null
+    }
+
+    if ($wildcardUrl.UrlString -match ':(?<port>\d+)$') {
+        return [int]$Matches['port']
+    }
+
+    return $null
+}
