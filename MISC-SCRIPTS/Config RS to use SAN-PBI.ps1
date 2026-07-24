@@ -1,0 +1,48 @@
+<#
+.SYNOPSIS
+    Configures Power BI Report Server (PBIRS) to use a Subject Alternative Name (SAN),
+    replacing any previously-configured SAN.
+.DESCRIPTION
+    Implements https://learn.microsoft.com/en-us/sql/reporting-services/report-server-sharepoint/configure-reporting-services-to-use-a-subject-alternative-name
+    for Power BI Report Server specifically. Prompts for the SAN URL, validates
+    prerequisites (admin rights, service/config present, TLS port + certificate valid
+    for the hostname, no urlacl conflicts), then updates rsreportserver.config and the
+    netsh http urlacl reservations, and restarts the service.
+.NOTES
+    Modified: 2026-07-23
+#>
+
+[CmdletBinding()]
+param(
+    [switch]$WhatIf
+)
+
+$script:LogFile           = Join-Path $PSScriptRoot 'SAN-Config-Log.txt'
+$script:PbirsServiceName  = 'PowerBIReportServer'
+$script:PbirsConfigPath   = 'C:\Program Files\Microsoft Power BI Report Server\PBIRS\ReportServer\rsreportserver.config'
+$script:PbirsAccountName  = 'NT SERVICE\PowerBIReportServer'
+$script:PbirsAccountSid   = 'S-1-5-80-1730998386-2757299892-37364343-1607169425-3512908663'
+$script:PbirsUrlAclPaths  = @('ReportServer', 'Reports', 'PowerBI', 'wopi')
+
+# ==============================
+# Logging
+# ==============================
+function Write-Log {
+    param(
+        [Parameter(Mandatory)][string]$Message,
+        [string]$LogFile = $script:LogFile
+    )
+    $timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+    $line = "$timestamp - $Message"
+    Write-Host $line
+    Add-Content -LiteralPath $LogFile -Value $line
+}
+
+# ==============================
+# Blocker checks
+# ==============================
+function Test-IsAdministrator {
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $principal = New-Object Security.Principal.WindowsPrincipal($identity)
+    return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
