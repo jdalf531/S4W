@@ -179,3 +179,67 @@ function Test-CertificateForSan {
         SanNames = $sanNames
     }
 }
+
+function Get-OldSanUrlNodes {
+    param(
+        [Parameter(Mandatory)][xml]$ConfigXml,
+        [Parameter(Mandatory)][string]$Application
+    )
+
+    $urlNodes = $ConfigXml.SelectNodes("//UrlReservations[Application='$Application']/URLs/URL")
+    # Note: the unary comma is required here, not just @(). A plain `return @(...)`
+    # still unwraps a single-element array back to a bare XmlElement when it crosses
+    # the function's return/pipeline boundary (PowerShell only preserves array-ness
+    # across pipeline output for 0 or 2+ items). XmlElement also doesn't get the
+    # auto Count/ETS member that scalars normally receive, so callers doing
+    # $nodes.Count would silently get $null instead of 1 for the single-match case.
+    return , @($urlNodes | Where-Object { $_.UrlString -notmatch '^https?://\+:' })
+}
+
+function Update-ReportServerConfigXml {
+    param(
+        [Parameter(Mandatory)][xml]$ConfigXml,
+        [Parameter(Mandatory)][string]$NewHostname,
+        [Parameter(Mandatory)][int]$Port
+    )
+
+    $applications = 'ReportServerWebService', 'ReportServerWebApp'
+    $removedHostnames = [System.Collections.Generic.List[string]]::new()
+
+    foreach ($app in $applications) {
+        $urlsNode = $ConfigXml.SelectSingleNode("//UrlReservations[Application='$app']/URLs")
+        if (-not $urlsNode) {
+            throw "Could not find URLs section for application '$app' in rsreportserver.config."
+        }
+
+        $wildcardNode = $urlsNode.URL | Where-Object { $_.UrlString -match '^https?://\+:' } | Select-Object -First 1
+        if (-not $wildcardNode) {
+            throw "Could not find default 'https://+:$Port' listener for application '$app'."
+        }
+
+        foreach ($oldNode in (Get-OldSanUrlNodes -ConfigXml $ConfigXml -Application $app)) {
+            if ($oldNode.UrlString -match '^https?://([^:/]+):') {
+                $removedHostnames.Add($Matches[1])
+            }
+            [void]$urlsNode.RemoveChild($oldNode)
+        }
+
+        $newNode = $ConfigXml.CreateElement('URL')
+
+        $urlStringEl = $ConfigXml.CreateElement('UrlString')
+        $urlStringEl.InnerText = "https://$($NewHostname):$($Port)"
+        [void]$newNode.AppendChild($urlStringEl)
+
+        $sidEl = $ConfigXml.CreateElement('AccountSid')
+        $sidEl.InnerText = $wildcardNode.AccountSid
+        [void]$newNode.AppendChild($sidEl)
+
+        $nameEl = $ConfigXml.CreateElement('AccountName')
+        $nameEl.InnerText = $wildcardNode.AccountName
+        [void]$newNode.AppendChild($nameEl)
+
+        [void]$urlsNode.AppendChild($newNode)
+    }
+
+    return ($removedHostnames | Select-Object -Unique)
+}

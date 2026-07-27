@@ -192,3 +192,84 @@ Describe 'Test-CertificateForSan' {
         $result.Failures | Should -Contain 'Certificate has no private key.'
     }
 }
+
+Describe 'Get-OldSanUrlNodes / Update-ReportServerConfigXml' {
+    BeforeAll {
+        function New-FixtureConfig {
+            [xml]@'
+<Configuration>
+  <UrlReservations>
+    <Application>ReportServerWebService</Application>
+    <URLs>
+      <URL>
+        <UrlString>https://+:443</UrlString>
+        <AccountSid>S-1-5-80-1730998386-2757299892-37364343-1607169425-3512908663</AccountSid>
+        <AccountName>NT SERVICE\PowerBIReportServer</AccountName>
+      </URL>
+      <URL>
+        <UrlString>https://old.contoso.com:443</UrlString>
+        <AccountSid>S-1-5-80-1730998386-2757299892-37364343-1607169425-3512908663</AccountSid>
+        <AccountName>NT SERVICE\PowerBIReportServer</AccountName>
+      </URL>
+    </URLs>
+  </UrlReservations>
+  <UrlReservations>
+    <Application>ReportServerWebApp</Application>
+    <URLs>
+      <URL>
+        <UrlString>https://+:443</UrlString>
+        <AccountSid>S-1-5-80-1730998386-2757299892-37364343-1607169425-3512908663</AccountSid>
+        <AccountName>NT SERVICE\PowerBIReportServer</AccountName>
+      </URL>
+    </URLs>
+  </UrlReservations>
+</Configuration>
+'@
+        }
+    }
+
+    It 'finds the one old SAN entry in ReportServerWebService' {
+        $config = New-FixtureConfig
+
+        $nodes = Get-OldSanUrlNodes -ConfigXml $config -Application 'ReportServerWebService'
+
+        $nodes.Count | Should -Be 1
+        $nodes[0].UrlString | Should -Be 'https://old.contoso.com:443'
+    }
+
+    It 'finds no old SAN entries in ReportServerWebApp' {
+        $config = New-FixtureConfig
+
+        (Get-OldSanUrlNodes -ConfigXml $config -Application 'ReportServerWebApp').Count | Should -Be 0
+    }
+
+    It 'replaces the old SAN entry and reports the removed hostname' {
+        $config = New-FixtureConfig
+
+        $removed = Update-ReportServerConfigXml -ConfigXml $config -NewHostname 'new.contoso.com' -Port 443
+
+        $removed | Should -Be @('old.contoso.com')
+    }
+
+    It 'adds the new URL to both sections and preserves the wildcard listener' {
+        $config = New-FixtureConfig
+
+        Update-ReportServerConfigXml -ConfigXml $config -NewHostname 'new.contoso.com' -Port 443 | Out-Null
+
+        $webServiceUrls = $config.SelectNodes("//UrlReservations[Application='ReportServerWebService']/URLs/URL") | ForEach-Object UrlString
+        $webAppUrls = $config.SelectNodes("//UrlReservations[Application='ReportServerWebApp']/URLs/URL") | ForEach-Object UrlString
+
+        $webServiceUrls | Should -Be @('https://+:443', 'https://new.contoso.com:443')
+        $webAppUrls | Should -Be @('https://+:443', 'https://new.contoso.com:443')
+    }
+
+    It 'copies the AccountSid and AccountName from the wildcard entry onto the new node' {
+        $config = New-FixtureConfig
+
+        Update-ReportServerConfigXml -ConfigXml $config -NewHostname 'new.contoso.com' -Port 443 | Out-Null
+
+        $newNode = $config.SelectSingleNode("//UrlReservations[Application='ReportServerWebService']/URLs/URL[UrlString='https://new.contoso.com:443']")
+        $newNode.AccountName | Should -Be 'NT SERVICE\PowerBIReportServer'
+        $newNode.AccountSid | Should -Be 'S-1-5-80-1730998386-2757299892-37364343-1607169425-3512908663'
+    }
+}
