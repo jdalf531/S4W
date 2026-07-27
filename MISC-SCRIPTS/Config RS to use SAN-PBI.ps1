@@ -243,3 +243,31 @@ function Update-ReportServerConfigXml {
 
     return ($removedHostnames | Select-Object -Unique)
 }
+
+# ==============================
+# System integration
+# ==============================
+function Invoke-NetshCommand {
+    param([Parameter(Mandatory)][string[]]$Args)
+
+    $output = & netsh.exe @Args 2>&1
+    return [PSCustomObject]@{
+        ExitCode = $LASTEXITCODE
+        Output   = $output
+    }
+}
+
+function Backup-ReportServerConfig {
+    param([Parameter(Mandatory)][string]$ConfigPath)
+
+    $timestamp = Get-Date -Format 'yyyyMMddHHmmss'
+    $backupPath = "$ConfigPath.bak-$timestamp"
+    Copy-Item -LiteralPath $ConfigPath -Destination $backupPath -Force
+    return $backupPath
+}
+
+function Restart-PbirsService {
+    Restart-Service -Name $script:PbirsServiceName -Force
+    $service = Get-Service -Name $script:PbirsServiceName
+    $service.WaitForStatus('Running', (New-TimeSpan -Seconds 60))
+}

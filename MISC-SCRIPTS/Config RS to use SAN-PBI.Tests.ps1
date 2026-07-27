@@ -273,3 +273,30 @@ Describe 'Get-OldSanUrlNodes / Update-ReportServerConfigXml' {
         $newNode.AccountSid | Should -Be 'S-1-5-80-1730998386-2757299892-37364343-1607169425-3512908663'
     }
 }
+
+Describe 'Invoke-NetshCommand' {
+    It 'runs a real read-only netsh command and captures exit code 0' {
+        $result = Invoke-NetshCommand -Args @('http', 'show', 'urlacl')
+
+        $result.ExitCode | Should -Be 0
+        $result.Output | Should -Not -BeNullOrEmpty
+    }
+}
+
+Describe 'Backup-ReportServerConfig' {
+    It 'copies the config file to a timestamped .bak file next to it' {
+        $sourcePath = Join-Path $TestDrive 'rsreportserver.config'
+        Set-Content -LiteralPath $sourcePath -Value '<Configuration></Configuration>'
+
+        $backupPath = Backup-ReportServerConfig -ConfigPath $sourcePath
+
+        # Note: the regex concatenation must be parenthesized. In PowerShell's
+        # "command argument mode" (bare args to a cmdlet, not already inside an
+        # expression), `-Match [regex]::Escape($sourcePath) + '...'` is NOT
+        # combined via the `+` operator - it gets split into separate positional
+        # arguments, which breaks Should's pipeline binding for $backupPath.
+        $backupPath | Should -Match ([regex]::Escape($sourcePath) + '\.bak-\d{14}$')
+        Test-Path -LiteralPath $backupPath | Should -BeTrue
+        Get-Content -LiteralPath $backupPath -Raw | Should -Be (Get-Content -LiteralPath $sourcePath -Raw)
+    }
+}
