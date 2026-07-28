@@ -146,6 +146,70 @@ function Get-CertHashFromSslCertOutput {
     return $null
 }
 
+function Get-DnsNamesFromSanExtension {
+    # Locale-independent parse of a Subject Alternative Name extension's raw
+    # DER-encoded bytes. Avoids $extension.Format($true), whose "DNS Name="
+    # label text is localized on non-English Windows installations, which
+    # would make a text/regex-based parse silently find zero SAN names there.
+    #
+    # The SAN extension is a DER SEQUENCE (tag 0x30) of GeneralName CHOICE
+    # values. Each GeneralName is a context-specific primitive TLV; a dNSName
+    # entry uses tag 0x82, and its value bytes are the ASCII hostname. Other
+    # GeneralName tags (e.g. 0x81 rfc822Name, 0x87 iPAddress) are skipped.
+    param([Parameter(Mandatory)][byte[]]$RawData)
+
+    $dnsNames = [System.Collections.Generic.List[string]]::new()
+
+    function Read-DerLength {
+        param([byte[]]$Bytes, [int]$Offset)
+
+        $lengthByte = $Bytes[$Offset]
+        $Offset++
+
+        if (($lengthByte -band 0x80) -eq 0) {
+            # Short form: the byte itself is the length.
+            return [PSCustomObject]@{ Length = [int]$lengthByte; NextOffset = $Offset }
+        }
+
+        # Long form: low 7 bits give the count of subsequent length-bytes.
+        $numLengthBytes = $lengthByte -band 0x7F
+        $length = 0
+        for ($i = 0; $i -lt $numLengthBytes; $i++) {
+            $length = ($length -shl 8) -bor $Bytes[$Offset]
+            $Offset++
+        }
+        return [PSCustomObject]@{ Length = $length; NextOffset = $Offset }
+    }
+
+    if ($RawData.Length -lt 2 -or $RawData[0] -ne 0x30) {
+        return $dnsNames
+    }
+
+    $outerLen = Read-DerLength -Bytes $RawData -Offset 1
+    $offset = $outerLen.NextOffset
+    $end = $offset + $outerLen.Length
+    if ($end -gt $RawData.Length) { $end = $RawData.Length }
+
+    while ($offset -lt $end) {
+        $tag = $RawData[$offset]
+        $offset++
+        if ($offset -ge $RawData.Length) { break }
+
+        $valueLen = Read-DerLength -Bytes $RawData -Offset $offset
+        $offset = $valueLen.NextOffset
+
+        if ($offset + $valueLen.Length -gt $RawData.Length) { break }
+
+        if ($tag -eq 0x82) {
+            $dnsNames.Add([System.Text.Encoding]::ASCII.GetString($RawData, $offset, $valueLen.Length))
+        }
+
+        $offset += $valueLen.Length
+    }
+
+    return $dnsNames
+}
+
 function Test-CertificateForSan {
     param(
         [Parameter(Mandatory)][System.Security.Cryptography.X509Certificates.X509Certificate2]$Certificate,
@@ -165,8 +229,7 @@ function Test-CertificateForSan {
     $sanExtension = $Certificate.Extensions | Where-Object { $_.Oid.FriendlyName -eq 'Subject Alternative Name' } | Select-Object -First 1
     $sanNames = @()
     if ($sanExtension) {
-        $sanText = $sanExtension.Format($true)
-        $sanNames = [regex]::Matches($sanText, 'DNS Name=(?<name>\S+)') | ForEach-Object { $_.Groups['name'].Value }
+        $sanNames = @(Get-DnsNamesFromSanExtension -RawData $sanExtension.RawData)
     }
 
     if ($Hostname -notin $sanNames) {
@@ -262,7 +325,7 @@ function Backup-ReportServerConfig {
 
     $timestamp = Get-Date -Format 'yyyyMMddHHmmss'
     $backupPath = "$ConfigPath.bak-$timestamp"
-    Copy-Item -LiteralPath $ConfigPath -Destination $backupPath -Force
+    Copy-Item -LiteralPath $ConfigPath -Destination $backupPath -Force -ErrorAction Stop
     return $backupPath
 }
 
@@ -384,7 +447,13 @@ function Invoke-Main {
         Write-Log "Added urlacl: $($cmd.Url)"
     }
 
-    Restart-PbirsService
+    try {
+        Restart-PbirsService
+    }
+    catch {
+        Write-Log "FAILED to restart $($script:PbirsServiceName): $($_.Exception.Message). The config file and urlacl reservations have already been applied successfully. See $backupPath to restore the previous config if a manual rollback is needed. NOTE: urlacl changes are NOT covered by the config backup - if you roll back the config, you must manually reconcile urlacl state (delete the newly-added reservations and re-add the old ones) yourself."
+        throw "Failed to restart $($script:PbirsServiceName) after applying config and urlacl changes. See $backupPath to restore the previous config if needed (urlacl changes are not covered by this backup). Original error: $($_.Exception.Message)"
+    }
     Write-Log 'PowerBIReportServer service restarted successfully.'
     Write-Log 'SAN configuration complete.'
 }
