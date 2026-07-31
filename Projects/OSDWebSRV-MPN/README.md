@@ -106,22 +106,13 @@ command.
 
 ## Configuration (`appsettings.json`)
 
-Edit `C:\inetpub\OsdWebService\appsettings.json` **before starting the service**:
+`Install-OsdWebService.ps1` (below) writes `ApiKey`, `LogStorage:BasePath`,
+`Mecm:SiteServer`, and `Mecm:SiteCode` into the published `appsettings.json`
+for you — prompting for the MECM site server/site code if you don't pass
+them as parameters, and auto-generating the API key if you don't supply
+one. There is no manual JSON edit needed after the script completes.
 
-```json
-{
-  "ApiKey": "REPLACE-WITH-A-STRONG-RANDOM-KEY",
-  "LogStorage": {
-    "BasePath": "C:\\OSDLogs"
-  },
-  "Mecm": {
-    "SiteServer": "cm01.corp.contoso.com",
-    "SiteCode":   "PS1"
-  }
-}
-```
-
-**Generate a strong API key:**
+If you ever need to generate an API key by hand (e.g. to rotate one later):
 ```powershell
 [System.Convert]::ToBase64String([System.Security.Cryptography.RandomNumberGenerator]::GetBytes(32))
 ```
@@ -138,16 +129,24 @@ Run as a local administrator on the IIS server:
     -CertificateThumbprint 'AB12CD34EF56...' `
     -LogStoragePath        C:\OSDLogs `
     -AppPoolIdentity       'CORP\svc-osdweb' `
-    -UrlRewriteMsiPath     '\\fileserver\software\IIS\rewrite_amd64_en-US.msi'
-    # Script will prompt securely for the password
+    -UrlRewriteMsiPath     '\\fileserver\software\IIS\rewrite_amd64_en-US.msi' `
+    -MecmSiteServer        cm01.corp.contoso.com `
+    -MecmSiteCode          PS1
+    # Script will prompt securely for the app pool password.
+    # Omit -MecmSiteServer/-MecmSiteCode to be prompted for them instead.
+    # Omit -ApiKey to have one generated and printed for you.
 ```
 
 `-UrlRewriteMsiPath` is optional and only used if the URL Rewrite module
-isn't already installed. The script never downloads it — point this at a
+isn't already installed. The script never downloads it - point this at a
 copy staged on an internal file share or software repository. If omitted
 and the module is missing, the script warns and continues (the HTTP->HTTPS
 redirect rule in `web.config` won't function until the module is installed
 by some other means).
+
+`-MecmSiteServer`, `-MecmSiteCode`, and `-ApiKey` are all optional: leave
+any of them off the command line and the script will prompt for it (or, for
+`-ApiKey`, generate one and print it once).
 
 ### Application pool identity requirements
 
