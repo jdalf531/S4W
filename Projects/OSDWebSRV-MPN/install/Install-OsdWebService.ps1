@@ -78,7 +78,11 @@ param(
     [string]       $LogStoragePath     = 'C:\OSDLogs',
     [string]       $AppPoolIdentity    = '',
     [SecureString] $AppPoolPassword    = $null,
-    [string]       $UrlRewriteMsiPath  = ''
+    [string]       $UrlRewriteMsiPath  = '',
+
+    [string] $MecmSiteServer = '',
+    [string] $MecmSiteCode   = '',
+    [string] $ApiKey         = ''
 )
 
 #Requires -RunAsAdministrator
@@ -93,7 +97,56 @@ function Write-Step([string]$msg) {
 }
 
 # -----------------------------------------------------------------------
-# 1. IIS features
+# Load Set-OsdAppSetting (regex-based appsettings.json value substitution)
+# -----------------------------------------------------------------------
+. (Join-Path $PSScriptRoot 'Set-OsdAppSetting.ps1')
+
+# -----------------------------------------------------------------------
+# 1. Validate publish folder, collect MECM/API config, write appsettings.json
+#    (done first, before any system changes, so a bad input fails fast)
+# -----------------------------------------------------------------------
+Write-Step "Validating publish folder"
+
+if (-not (Test-Path $PublishPath)) {
+    throw "PublishPath '$PublishPath' not found.  Run 'dotnet publish' first."
+}
+
+$appSettingsPath = Join-Path $PublishPath 'appsettings.json'
+if (-not (Test-Path $appSettingsPath)) {
+    throw "appsettings.json not found in '$PublishPath'.  Run 'dotnet publish' first."
+}
+
+Write-Step "Collecting MECM configuration"
+
+if (-not $MecmSiteServer) {
+    do {
+        $MecmSiteServer = Read-Host "Enter your MECM site server (hostname or FQDN)"
+    } while ([string]::IsNullOrWhiteSpace($MecmSiteServer))
+}
+
+if (-not $MecmSiteCode) {
+    do {
+        $MecmSiteCode = Read-Host "Enter your MECM site code (3 characters)"
+    } while ($MecmSiteCode -notmatch '^[A-Za-z0-9]{3}$')
+}
+
+if (-not $ApiKey) {
+    $ApiKey = [System.Convert]::ToBase64String([System.Security.Cryptography.RandomNumberGenerator]::GetBytes(32))
+    Write-Host "`nGenerated API key: $ApiKey" -ForegroundColor Yellow
+    Write-Warning "Record this API key now - it will not be shown again until the closing summary. It is required to configure Submit-OSDLogs.ps1 / Get-DriverPackages.ps1 on WinPE clients."
+}
+
+Write-Step "Writing configuration into appsettings.json"
+
+Set-OsdAppSetting -Path $appSettingsPath -Key 'ApiKey'      -Value $ApiKey
+Set-OsdAppSetting -Path $appSettingsPath -Key 'BasePath'    -Value $LogStoragePath
+Set-OsdAppSetting -Path $appSettingsPath -Key 'SiteServer'  -Value $MecmSiteServer
+Set-OsdAppSetting -Path $appSettingsPath -Key 'SiteCode'    -Value $MecmSiteCode
+
+Write-Host "appsettings.json updated."
+
+# -----------------------------------------------------------------------
+# 2. IIS features
 # -----------------------------------------------------------------------
 Write-Step "Checking IIS features"
 
@@ -150,7 +203,7 @@ if (-not (Test-Path $rewriteReg)) {
 }
 
 # -----------------------------------------------------------------------
-# 2. Log storage folder
+# 3. Log storage folder
 # -----------------------------------------------------------------------
 Write-Step "Creating log storage folder: $LogStoragePath"
 
@@ -173,7 +226,7 @@ Set-Acl -Path $LogStoragePath -AclObject $acl
 Write-Host "Granted Modify on $LogStoragePath to $identity"
 
 # -----------------------------------------------------------------------
-# 3. Application Pool
+# 4. Application Pool
 # -----------------------------------------------------------------------
 Write-Step "Configuring application pool: $AppPoolName"
 
@@ -211,14 +264,9 @@ else {
 }
 
 # -----------------------------------------------------------------------
-# 4. IIS Website
+# 5. IIS Website
 # -----------------------------------------------------------------------
 Write-Step "Configuring IIS website: $SiteName"
-
-# Validate publish path
-if (-not (Test-Path $PublishPath)) {
-    throw "PublishPath '$PublishPath' not found.  Run 'dotnet publish' first."
-}
 
 $cert = Get-ChildItem Cert:\LocalMachine\My |
         Where-Object { $_.Thumbprint -ieq $CertificateThumbprint } |
@@ -246,7 +294,7 @@ $binding.AddSslCertificate($CertificateThumbprint, 'My')
 Write-Host "Website '$SiteName' bound to port $HttpsPort with certificate: $($cert.Subject)"
 
 # -----------------------------------------------------------------------
-# 5. IIS permissions on the publish folder
+# 6. IIS permissions on the publish folder
 # -----------------------------------------------------------------------
 Write-Step "Setting NTFS permissions on publish folder"
 
@@ -283,15 +331,13 @@ Write-Host "`n" -NoNewline
 Write-Host "Installation complete." -ForegroundColor Green
 Write-Host ""
 Write-Host "Next steps:"
-Write-Host "  1. Edit appsettings.json in '$PublishPath' and set:"
-Write-Host "       ApiKey           - a strong random string"
-Write-Host "       LogStorage:BasePath - $LogStoragePath (already created)"
-Write-Host "       Mecm:SiteServer  - your MECM site server FQDN"
-Write-Host "       Mecm:SiteCode    - your three-character site code"
-Write-Host "  2. Restart the application pool:"
+Write-Host "  1. Restart the application pool:"
 Write-Host "       Restart-WebAppPool -Name $AppPoolName"
-Write-Host "  3. Test the health endpoint:"
+Write-Host "  2. Test the health endpoint:"
 Write-Host "       Invoke-RestMethod https://localhost:$HttpsPort/health"
+Write-Host ""
+Write-Host "API key (record this if you have not already):"
+Write-Host "  $ApiKey"
 Write-Host ""
 Write-Host "MECM WMI access note:"
 Write-Host "  The identity '$identity' must be a member of the 'SMS Admins'"
