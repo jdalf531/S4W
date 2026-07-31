@@ -80,4 +80,11 @@ Describe 'Set-OsdAppSetting' {
     It 'throws when the key is not found' {
         { Set-OsdAppSetting -Path $script:FixturePath -Key 'NoSuchKey' -Value 'x' } | Should -Throw
     }
+
+    It 'allows idempotent re-runs (setting a key to its current value does not throw)' {
+        Set-OsdAppSetting -Path $script:FixturePath -Key 'SiteCode' -Value 'PS1'
+
+        $json = ConvertFrom-CommentedJson (Get-Content -LiteralPath $script:FixturePath -Raw)
+        $json.Mecm.SiteCode | Should -Be 'PS1'
+    }
 }

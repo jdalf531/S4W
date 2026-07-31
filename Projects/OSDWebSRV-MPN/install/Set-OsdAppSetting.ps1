@@ -32,11 +32,11 @@ function Set-OsdAppSetting {
     $pattern     = '("' + [regex]::Escape($Key) + '"\s*:\s*)"(?:[^"\\]|\\.)*"'
     $replacement = '${1}"' + $replacementValue + '"'
 
-    $updated = [regex]::Replace($content, $pattern, $replacement, 1)
-
-    if ($updated -eq $content) {
+    if (-not [regex]::IsMatch($content, $pattern)) {
         throw "Key '$Key' not found in '$Path'."
     }
+
+    $updated = [regex]::Replace($content, $pattern, $replacement, 1)
 
     Set-Content -LiteralPath $Path -Value $updated -NoNewline
 }
