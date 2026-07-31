@@ -132,6 +132,7 @@ Run as a local administrator on the IIS server:
     -UrlRewriteMsiPath     '\\fileserver\software\IIS\rewrite_amd64_en-US.msi' `
     -MecmSiteServer        cm01.corp.contoso.com `
     -MecmSiteCode          PS1
+
     # Script will prompt securely for the app pool password.
     # Omit -MecmSiteServer/-MecmSiteCode to be prompted for them instead.
     # Omit -ApiKey to have one generated and printed for you.
