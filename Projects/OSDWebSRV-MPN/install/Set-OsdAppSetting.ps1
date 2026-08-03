@@ -32,11 +32,17 @@ function Set-OsdAppSetting {
     $pattern     = '("' + [regex]::Escape($Key) + '"\s*:\s*)"(?:[^"\\]|\\.)*"'
     $replacement = '${1}"' + $replacementValue + '"'
 
-    if (-not [regex]::IsMatch($content, $pattern)) {
+    # Use an instance so we get the (input, replacement, count) overload —
+    # the static [regex]::Replace(...) has no such overload and PowerShell
+    # silently coerces a trailing int into RegexOptions instead, which both
+    # replaces every match and makes matching case-insensitive.
+    $re = [regex]::new($pattern)
+
+    if (-not $re.IsMatch($content)) {
         throw "Key '$Key' not found in '$Path'."
     }
 
-    $updated = [regex]::Replace($content, $pattern, $replacement, 1)
+    $updated = $re.Replace($content, $replacement, 1)
 
     Set-Content -LiteralPath $Path -Value $updated -NoNewline
 }

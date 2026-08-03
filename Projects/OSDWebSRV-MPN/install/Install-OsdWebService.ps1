@@ -8,12 +8,14 @@
         dotnet publish -c Release -o C:\inetpub\OsdWebService
 
     What the script does:
-      1. Verifies / installs required Windows features (IIS + URL Rewrite module).
-      2. Creates the log storage folder with appropriate NTFS permissions.
-      3. Creates a dedicated application pool (No Managed Code, identity = NetworkService
+      1. Collects the ApiKey / LogStorage / Mecm configuration (prompting or
+         auto-generating as needed) and writes it into appsettings.json,
+         before making any system changes.
+      2. Verifies / installs required Windows features (IIS + URL Rewrite module).
+      3. Creates the log storage folder with appropriate NTFS permissions.
+      4. Creates a dedicated application pool (No Managed Code, identity = NetworkService
          or a domain service account you supply).
-      4. Creates the IIS website with the specified HTTPS binding.
-      5. Writes an event-log source for easy filtering in Event Viewer.
+      5. Creates the IIS website with the specified HTTPS binding.
 
 .PARAMETER PublishPath
     Folder containing the published application files.
@@ -55,13 +57,33 @@
     HTTP->HTTPS redirect rule in web.config will not function until the
     module is installed by some other means).
 
+.PARAMETER MecmSiteServer
+    Hostname or FQDN of the MECM primary/CAS site server running the SMS
+    Provider. Optional: if omitted, the script prompts for it interactively.
+
+.PARAMETER MecmSiteCode
+    Three-character MECM site code (e.g. "PS1"). Must be exactly 3
+    alphanumeric characters. Optional: if omitted, the script prompts for it
+    interactively.
+
+.PARAMETER ApiKey
+    API key required by WinPE clients (Submit-OSDLogs.ps1 /
+    Get-DriverPackages.ps1) to call this service. Optional: if omitted (and
+    appsettings.json does not already contain a real key from a previous
+    run), a random key is auto-generated and printed to the console. If
+    explicitly supplied, it always overwrites whatever is currently in
+    appsettings.json.
+
 .EXAMPLE
     .\Install-OsdWebService.ps1 `
         -PublishPath           C:\inetpub\OsdWebService `
         -CertificateThumbprint 'AB12CD34...' `
         -AppPoolIdentity       'CORP\svc-osdwebservice' `
-        -UrlRewriteMsiPath     '\\fileserver\software\IIS\rewrite_amd64_en-US.msi'
+        -UrlRewriteMsiPath     '\\fileserver\software\IIS\rewrite_amd64_en-US.msi' `
+        -MecmSiteServer        cm01.corp.contoso.com `
+        -MecmSiteCode          PS1
     # The script will prompt for the password securely.
+    # Omit -ApiKey to have one generated (or reused, if already set) and printed for you.
 #>
 [CmdletBinding(SupportsShouldProcess)]
 param(
@@ -118,22 +140,48 @@ if (-not (Test-Path $appSettingsPath)) {
 
 Write-Step "Collecting MECM configuration"
 
-if (-not $MecmSiteServer) {
+if ([string]::IsNullOrWhiteSpace($MecmSiteServer)) {
     do {
         $MecmSiteServer = Read-Host "Enter your MECM site server (hostname or FQDN)"
     } while ([string]::IsNullOrWhiteSpace($MecmSiteServer))
 }
 
-if (-not $MecmSiteCode) {
+if ([string]::IsNullOrWhiteSpace($MecmSiteCode)) {
     do {
         $MecmSiteCode = Read-Host "Enter your MECM site code (3 characters)"
     } while ($MecmSiteCode -notmatch '^[A-Za-z0-9]{3}$')
 }
 
-if (-not $ApiKey) {
-    $ApiKey = [System.Convert]::ToBase64String([System.Security.Cryptography.RandomNumberGenerator]::GetBytes(32))
-    Write-Host "`nGenerated API key: $ApiKey" -ForegroundColor Yellow
-    Write-Warning "Record this API key now - it will not be shown again until the closing summary. It is required to configure Submit-OSDLogs.ps1 / Get-DriverPackages.ps1 on WinPE clients."
+# Final validation regardless of where the value came from: the loop above
+# only runs when the parameter was blank/whitespace, so a bad value supplied
+# directly on the command line (e.g. -MecmSiteCode 'PS12') would otherwise
+# sail through unvalidated.
+if ($MecmSiteCode -notmatch '^[A-Za-z0-9]{3}$') {
+    throw "MecmSiteCode '$MecmSiteCode' is invalid - it must be exactly 3 alphanumeric characters."
+}
+
+if ([string]::IsNullOrWhiteSpace($ApiKey)) {
+    # Don't blindly rotate the key on a plain re-run: read whatever is
+    # currently in appsettings.json first, and only generate a new one if
+    # there isn't already a real key in place. This avoids silently
+    # invalidating every deployed WinPE client's key on every re-install,
+    # and avoids overwriting a working key moments before a later section
+    # (e.g. a bad -CertificateThumbprint) could throw and abort the script.
+    $existingApiKey = $null
+    $existingAppSettingsContent = Get-Content -LiteralPath $appSettingsPath -Raw
+    if ($existingAppSettingsContent -match '"ApiKey"\s*:\s*"((?:[^"\\]|\\.)*)"') {
+        $existingApiKey = $Matches[1]
+    }
+
+    if ($existingApiKey -and $existingApiKey -ne 'REPLACE-WITH-A-STRONG-RANDOM-KEY') {
+        $ApiKey = $existingApiKey
+        Write-Host "Existing API key found in appsettings.json - keeping it (pass -ApiKey to rotate it explicitly)." -ForegroundColor Yellow
+    }
+    else {
+        $ApiKey = [System.Convert]::ToBase64String([System.Security.Cryptography.RandomNumberGenerator]::GetBytes(32))
+        Write-Host "`nGenerated API key: $ApiKey" -ForegroundColor Yellow
+        Write-Warning "Record this API key now - it will not be shown again until the closing summary. It is required to configure Submit-OSDLogs.ps1 / Get-DriverPackages.ps1 on WinPE clients."
+    }
 }
 
 Write-Step "Writing configuration into appsettings.json"

@@ -87,4 +87,27 @@ Describe 'Set-OsdAppSetting' {
         $json = ConvertFrom-CommentedJson (Get-Content -LiteralPath $script:FixturePath -Raw)
         $json.Mecm.SiteCode | Should -Be 'PS1'
     }
+
+    It 'replaces only the first occurrence when the same key name appears twice' {
+        $dupeFixturePath = Join-Path $TestDrive 'appsettings-dupe.json'
+        $dupeContent = @'
+{
+  "Mecm": {
+    "SiteServer": "MECM-SERVER-FQDN",
+    "SiteCode": "PS1"
+  },
+  "SecondaryMecm": {
+    "SiteServer": "SECONDARY-FQDN",
+    "SiteCode": "PS1"
+  }
+}
+'@
+        Set-Content -LiteralPath $dupeFixturePath -Value $dupeContent -NoNewline
+
+        Set-OsdAppSetting -Path $dupeFixturePath -Key 'SiteCode' -Value 'LAB'
+
+        $json = ConvertFrom-CommentedJson (Get-Content -LiteralPath $dupeFixturePath -Raw)
+        $json.Mecm.SiteCode | Should -Be 'LAB'
+        $json.SecondaryMecm.SiteCode | Should -Be 'PS1'
+    }
 }

@@ -28,7 +28,7 @@ OSD-Webservice/
 │   ├── LogStorageService.cs        – writes zip + metadata under BasePath
 │   └── MecmQueryService.cs         – WMI query to SMS Provider, 10-min cache
 ├── Program.cs
-├── appsettings.json                – edit before deploying
+├── appsettings.json                – written by the install script
 ├── web.config                      – IIS hosting + request-size limits
 ├── nuget.config                    – restricts restore to nuget-offline-cache/ (airgap)
 ├── nuget-offline-cache/            – vendored NuGet packages, no internet needed to build
@@ -36,7 +36,8 @@ OSD-Webservice/
 │   ├── Submit-OSDLogs.ps1          – WinPE PS5.1 uploader
 │   └── Get-DriverPackages.ps1      – WinPE PS5.1 package query
 └── install/
-    └── Install-OsdWebService.ps1   – IIS setup automation
+    ├── Install-OsdWebService.ps1   – IIS setup automation
+    └── Set-OsdAppSetting.ps1       – regex-based appsettings.json value substitution
 ```
 
 ---
