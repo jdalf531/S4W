@@ -1052,6 +1052,32 @@ function Get-DriveDatedFolders {
     )
 }
 
+function Get-CompletedFileHashes {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string] $FolderPath
+    )
+
+    $hashes = @{}
+
+    if (-not (Test-Path -LiteralPath $FolderPath)) {
+        return $hashes
+    }
+
+    $files = Get-ChildItem -LiteralPath $FolderPath -Recurse -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -notlike '*.partial' -and $_.Name -notlike '*.partial.meta' }
+
+    $trimLength = $FolderPath.TrimEnd('\', '/').Length
+
+    foreach ($file in $files) {
+        $relativePath = $file.FullName.Substring($trimLength).TrimStart('\', '/')
+        $hashes[$relativePath] = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash
+    }
+
+    $hashes
+}
+
 # ============================
 # INCREMENTAL COPY ENGINE (ASYNC)
 # ============================
