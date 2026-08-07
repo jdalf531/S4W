@@ -1177,6 +1177,66 @@ function Get-NewFilesForDate {
     @($newFiles)
 }
 
+function Resolve-DriveToMpnCopyPlan {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string] $DriveUserRoot,
+
+        [Parameter(Mandatory)]
+        [string] $DestUserRoot,
+
+        [int] $MaxSuffix = 50
+    )
+
+    $datedFolders = Get-DriveDatedFolders -DriveUserRoot $DriveUserRoot
+
+    $plan = foreach ($dateFolder in $datedFolders) {
+        $date = $dateFolder.Name
+
+        # The whole per-date resolution (listing/hashing existing destination
+        # folders, diffing, allocating a suffix) is wrapped in one try/catch
+        # so a network hiccup or permissions error on one date - anywhere in
+        # that chain, not just suffix allocation - is recorded as an Error
+        # entry for that date instead of aborting the rest of the plan.
+        try {
+            $existingCandidates = @(Get-DateFolderCandidates -DestUserRoot $DestUserRoot -Date $date)
+            $newFiles = @(Get-NewFilesForDate -SourceDateFolder $dateFolder.FullName -ExistingDestFolders $existingCandidates)
+
+            if ($newFiles.Count -eq 0) {
+                [PSCustomObject]@{
+                    Date         = $date
+                    Action       = 'AlreadyDelivered'
+                    TargetFolder = $null
+                    Files        = @()
+                    Error        = $null
+                }
+            }
+            else {
+                $targetName = Get-NextAvailableDateSuffix -DestUserRoot $DestUserRoot -Date $date -MaxSuffix $MaxSuffix
+                [PSCustomObject]@{
+                    Date         = $date
+                    Action       = 'Copy'
+                    TargetFolder = Join-Path $DestUserRoot $targetName
+                    Files        = $newFiles
+                    Error        = $null
+                }
+            }
+        }
+        catch {
+            [PSCustomObject]@{
+                Date         = $date
+                Action       = 'Error'
+                TargetFolder = $null
+                Files        = @()
+                Error        = $_.Exception.Message
+            }
+        }
+    }
+
+    @($plan)
+}
+
 # ============================
 # INCREMENTAL COPY ENGINE (ASYNC)
 # ============================

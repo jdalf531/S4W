@@ -309,3 +309,101 @@ Describe 'Get-NewFilesForDate' {
         $result.RelativePath | Should -Be @('a.txt')
     }
 }
+
+Describe 'Resolve-DriveToMpnCopyPlan' {
+    BeforeAll {
+        function Import-ScriptFunctions {
+            param(
+                [Parameter(Mandatory)] [string] $Path,
+                [Parameter(Mandatory)] [string[]] $Name
+            )
+
+            $content = Get-Content -LiteralPath $Path -Raw
+            $tokens = $null
+            $parseErrors = $null
+            $ast = [System.Management.Automation.Language.Parser]::ParseInput($content, [ref]$tokens, [ref]$parseErrors)
+
+            foreach ($functionName in $Name) {
+                $functionAst = $ast.FindAll(
+                    { param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $functionName },
+                    $true
+                ) | Select-Object -First 1
+
+                if (-not $functionAst) {
+                    throw "Function '$functionName' not found in '$Path'."
+                }
+
+                . ([scriptblock]::Create($functionAst.Extent.Text))
+            }
+        }
+
+        $script:ScriptPath = Join-Path $PSScriptRoot 'TransferDriveTool-V3.ps1'
+        . Import-ScriptFunctions -Path $script:ScriptPath -Name @(
+            'Get-DriveDatedFolders',
+            'Get-CompletedFileHashes',
+            'Get-DateFolderCandidates',
+            'Get-NextAvailableDateSuffix',
+            'Get-NewFilesForDate',
+            'Resolve-DriveToMpnCopyPlan'
+        )
+    }
+
+    It 'marks a brand-new dated folder for copy when nothing exists at the destination yet' {
+        $driveRoot = Join-Path $TestDrive 'drive\Kevin'
+        $destRoot  = Join-Path $TestDrive 'mpn\Kevin'
+        New-Item -ItemType Directory -Path (Join-Path $driveRoot '20260807') -Force | Out-Null
+        Set-Content -Path (Join-Path $driveRoot '20260807\report.txt') -Value 'v1' -NoNewline
+
+        $plan = @(Resolve-DriveToMpnCopyPlan -DriveUserRoot $driveRoot -DestUserRoot $destRoot)
+
+        $plan.Count | Should -Be 1
+        $plan[0].Date | Should -Be '20260807'
+        $plan[0].Action | Should -Be 'Copy'
+        $plan[0].TargetFolder | Should -Be (Join-Path $destRoot '20260807')
+        $plan[0].Files.RelativePath | Should -Be @('report.txt')
+    }
+
+    It 'reports AlreadyDelivered when the destination already has an identical file' {
+        $driveRoot = Join-Path $TestDrive 'drive2\Kevin'
+        $destRoot  = Join-Path $TestDrive 'mpn2\Kevin'
+        New-Item -ItemType Directory -Path (Join-Path $driveRoot '20260807') -Force | Out-Null
+        Set-Content -Path (Join-Path $driveRoot '20260807\report.txt') -Value 'v1' -NoNewline
+        New-Item -ItemType Directory -Path (Join-Path $destRoot '20260807') -Force | Out-Null
+        Set-Content -Path (Join-Path $destRoot '20260807\report.txt') -Value 'v1' -NoNewline
+
+        $plan = @(Resolve-DriveToMpnCopyPlan -DriveUserRoot $driveRoot -DestUserRoot $destRoot)
+
+        $plan.Count | Should -Be 1
+        $plan[0].Action | Should -Be 'AlreadyDelivered'
+    }
+
+    It 'allocates a -1 suffix folder for a changed file on a same-day re-run, leaving the original folder untouched' {
+        $driveRoot = Join-Path $TestDrive 'drive3\Kevin'
+        $destRoot  = Join-Path $TestDrive 'mpn3\Kevin'
+        New-Item -ItemType Directory -Path (Join-Path $driveRoot '20260807') -Force | Out-Null
+        Set-Content -Path (Join-Path $driveRoot '20260807\report.txt') -Value 'v1' -NoNewline
+        Set-Content -Path (Join-Path $driveRoot '20260807\new_file.txt') -Value 'brand new' -NoNewline
+
+        New-Item -ItemType Directory -Path (Join-Path $destRoot '20260807') -Force | Out-Null
+        Set-Content -Path (Join-Path $destRoot '20260807\report.txt') -Value 'v1' -NoNewline
+
+        $plan = @(Resolve-DriveToMpnCopyPlan -DriveUserRoot $driveRoot -DestUserRoot $destRoot)
+
+        $plan.Count | Should -Be 1
+        $plan[0].Action | Should -Be 'Copy'
+        $plan[0].TargetFolder | Should -Be (Join-Path $destRoot '20260807-1')
+        $plan[0].Files.RelativePath | Should -Be @('new_file.txt')
+
+        (Get-Content -LiteralPath (Join-Path $destRoot '20260807\report.txt') -Raw) | Should -Be 'v1'
+    }
+
+    It 'returns an empty plan when there are no dated folders on the drive' {
+        $driveRoot = Join-Path $TestDrive 'drive4\Kevin'
+        $destRoot  = Join-Path $TestDrive 'mpn4\Kevin'
+        New-Item -ItemType Directory -Path $driveRoot -Force | Out-Null
+
+        $plan = @(Resolve-DriveToMpnCopyPlan -DriveUserRoot $driveRoot -DestUserRoot $destRoot)
+
+        $plan.Count | Should -Be 0
+    }
+}
