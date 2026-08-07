@@ -481,7 +481,7 @@ Describe 'Invoke-DriveToMpnDeliveryPlan' {
         $result.FilesSkipped | Should -Be 0
         (Get-Content -LiteralPath (Join-Path $targetFolder 'report.txt') -Raw) | Should -Be 'hello world'
 
-        $csvRows = Import-Csv -LiteralPath $script:CsvLogPath
+        $csvRows = @(Import-Csv -LiteralPath $script:CsvLogPath)
         $csvRows.Count | Should -Be 1
         $csvRows[0].FileName | Should -Be '20260807-1\report.txt'
     }
