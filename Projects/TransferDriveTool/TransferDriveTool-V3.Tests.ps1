@@ -241,3 +241,71 @@ Describe 'Get-NextAvailableDateSuffix' {
         { Get-NextAvailableDateSuffix -DestUserRoot $root -Date '20260807' -MaxSuffix 1 } | Should -Throw
     }
 }
+
+Describe 'Get-NewFilesForDate' {
+    BeforeAll {
+        function Import-ScriptFunctions {
+            param(
+                [Parameter(Mandatory)] [string] $Path,
+                [Parameter(Mandatory)] [string[]] $Name
+            )
+
+            $content = Get-Content -LiteralPath $Path -Raw
+            $tokens = $null
+            $parseErrors = $null
+            $ast = [System.Management.Automation.Language.Parser]::ParseInput($content, [ref]$tokens, [ref]$parseErrors)
+
+            foreach ($functionName in $Name) {
+                $functionAst = $ast.FindAll(
+                    { param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $functionName },
+                    $true
+                ) | Select-Object -First 1
+
+                if (-not $functionAst) {
+                    throw "Function '$functionName' not found in '$Path'."
+                }
+
+                . ([scriptblock]::Create($functionAst.Extent.Text))
+            }
+        }
+
+        $script:ScriptPath = Join-Path $PSScriptRoot 'TransferDriveTool-V3.ps1'
+        . Import-ScriptFunctions -Path $script:ScriptPath -Name @('Get-CompletedFileHashes', 'Get-NewFilesForDate')
+    }
+
+    It 'returns all source files when no destination folders exist yet' {
+        $source = Join-Path $TestDrive 'src1\20260807'
+        New-Item -ItemType Directory -Path $source -Force | Out-Null
+        Set-Content -Path (Join-Path $source 'a.txt') -Value 'alpha' -NoNewline
+
+        $result = @(Get-NewFilesForDate -SourceDateFolder $source -ExistingDestFolders @())
+
+        $result.RelativePath | Should -Be @('a.txt')
+    }
+
+    It 'excludes a file whose content already matches an existing destination folder' {
+        $source = Join-Path $TestDrive 'src2\20260807'
+        $dest   = Join-Path $TestDrive 'dest2\20260807'
+        New-Item -ItemType Directory -Path $source -Force | Out-Null
+        New-Item -ItemType Directory -Path $dest -Force | Out-Null
+        Set-Content -Path (Join-Path $source 'a.txt') -Value 'alpha' -NoNewline
+        Set-Content -Path (Join-Path $dest 'a.txt') -Value 'alpha' -NoNewline
+
+        $result = @(Get-NewFilesForDate -SourceDateFolder $source -ExistingDestFolders @(Get-Item -LiteralPath $dest))
+
+        $result.Count | Should -Be 0
+    }
+
+    It 'includes a file whose content differs from the same-named file at the destination' {
+        $source = Join-Path $TestDrive 'src3\20260807'
+        $dest   = Join-Path $TestDrive 'dest3\20260807'
+        New-Item -ItemType Directory -Path $source -Force | Out-Null
+        New-Item -ItemType Directory -Path $dest -Force | Out-Null
+        Set-Content -Path (Join-Path $source 'a.txt') -Value 'alpha-v2' -NoNewline
+        Set-Content -Path (Join-Path $dest 'a.txt') -Value 'alpha-v1' -NoNewline
+
+        $result = @(Get-NewFilesForDate -SourceDateFolder $source -ExistingDestFolders @(Get-Item -LiteralPath $dest))
+
+        $result.RelativePath | Should -Be @('a.txt')
+    }
+}

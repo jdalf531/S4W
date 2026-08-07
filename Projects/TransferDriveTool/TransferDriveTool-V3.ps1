@@ -1132,6 +1132,51 @@ function Get-NextAvailableDateSuffix {
     throw "Could not allocate a destination folder for date '$Date' under '$DestUserRoot' - all suffixes up to -$MaxSuffix are already in use."
 }
 
+function Get-NewFilesForDate {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string] $SourceDateFolder,
+
+        [Parameter(Mandatory)]
+        [AllowEmptyCollection()]
+        [System.IO.DirectoryInfo[]] $ExistingDestFolders
+    )
+
+    $delivered = @{}
+    foreach ($destFolder in $ExistingDestFolders) {
+        $folderHashes = Get-CompletedFileHashes -FolderPath $destFolder.FullName
+        foreach ($relativePath in $folderHashes.Keys) {
+            if (-not $delivered.ContainsKey($relativePath)) {
+                $delivered[$relativePath] = New-Object System.Collections.Generic.HashSet[string]
+            }
+            [void]$delivered[$relativePath].Add($folderHashes[$relativePath])
+        }
+    }
+
+    $sourceFiles = Get-ChildItem -LiteralPath $SourceDateFolder -Recurse -File -ErrorAction SilentlyContinue
+    $trimLength = $SourceDateFolder.TrimEnd('\', '/').Length
+
+    $newFiles = foreach ($file in $sourceFiles) {
+        $relativePath = $file.FullName.Substring($trimLength).TrimStart('\', '/')
+
+        $isDelivered = $false
+        if ($delivered.ContainsKey($relativePath)) {
+            $sourceHash = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash
+            $isDelivered = $delivered[$relativePath].Contains($sourceHash)
+        }
+
+        if (-not $isDelivered) {
+            [PSCustomObject]@{
+                FileInfo     = $file
+                RelativePath = $relativePath
+            }
+        }
+    }
+
+    @($newFiles)
+}
+
 # ============================
 # INCREMENTAL COPY ENGINE (ASYNC)
 # ============================
