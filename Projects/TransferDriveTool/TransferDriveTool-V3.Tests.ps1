@@ -407,3 +407,109 @@ Describe 'Resolve-DriveToMpnCopyPlan' {
         $plan.Count | Should -Be 0
     }
 }
+
+Describe 'Invoke-DriveToMpnDeliveryPlan' {
+    BeforeAll {
+        function Import-ScriptFunctions {
+            param(
+                [Parameter(Mandatory)] [string] $Path,
+                [Parameter(Mandatory)] [string[]] $Name
+            )
+
+            $content = Get-Content -LiteralPath $Path -Raw
+            $tokens = $null
+            $parseErrors = $null
+            $ast = [System.Management.Automation.Language.Parser]::ParseInput($content, [ref]$tokens, [ref]$parseErrors)
+
+            foreach ($functionName in $Name) {
+                $functionAst = $ast.FindAll(
+                    { param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $functionName },
+                    $true
+                ) | Select-Object -First 1
+
+                if (-not $functionAst) {
+                    throw "Function '$functionName' not found in '$Path'."
+                }
+
+                . ([scriptblock]::Create($functionAst.Extent.Text))
+            }
+        }
+
+        $script:ScriptPath = Join-Path $PSScriptRoot 'TransferDriveTool-V3.ps1'
+        . Import-ScriptFunctions -Path $script:ScriptPath -Name @(
+            'Copy-FileResumable',
+            'Add-CsvLogEntry',
+            'Invoke-DriveToMpnDeliveryPlan'
+        )
+    }
+
+    BeforeEach {
+        $script:CsvLogPath = Join-Path $TestDrive "log_$([guid]::NewGuid().ToString('N')).csv"
+        $headers = "LogEntryNumber,DTAName,AuthorizingManager,DateTimeUTC,SourceSystem,DestinationSystem,FileName,FileClassification,FileSize,SHA256,MediaUsed,Justification,ScanReviewVerification"
+        Set-Content -Path $script:CsvLogPath -Value $headers
+
+        $script:LogSnapshot = [PSCustomObject]@{
+            DtaName = 'Kevin'; Manager = 'Jane Doe'; SourceSystem = 'E:\DTA\Kevin'
+            DestSystem = '\\mpn\Kevin'; Classification = 'Confidential'
+            MediaUsed = 'USB_DRIVE'; Justification = 'Test'; ScanVerify = 'Yes'
+        }
+    }
+
+    It 'copies delta files into the target folder and logs a CSV row with the resolved folder name' {
+        $sourceFile = Join-Path $TestDrive 'source_report.txt'
+        Set-Content -Path $sourceFile -Value 'hello world' -NoNewline
+        $fileInfo = Get-Item -LiteralPath $sourceFile
+
+        $targetFolder = Join-Path $TestDrive 'dest\20260807-1'
+        $plan = @(
+            [PSCustomObject]@{
+                Date = '20260807'
+                Action = 'Copy'
+                TargetFolder = $targetFolder
+                Files = @([PSCustomObject]@{ FileInfo = $fileInfo; RelativePath = 'report.txt' })
+                Error = $null
+            }
+        )
+
+        $statusMessages = [System.Collections.Generic.List[string]]::new()
+
+        $result = Invoke-DriveToMpnDeliveryPlan -Plan $plan -CsvLogPath $script:CsvLogPath `
+            -LogSnapshot $script:LogSnapshot -TotalFiles 1 `
+            -OnStatus { param($msg) $statusMessages.Add($msg) }
+
+        $result.FilesCopied | Should -Be 1
+        $result.FilesSkipped | Should -Be 0
+        (Get-Content -LiteralPath (Join-Path $targetFolder 'report.txt') -Raw) | Should -Be 'hello world'
+
+        $csvRows = Import-Csv -LiteralPath $script:CsvLogPath
+        $csvRows.Count | Should -Be 1
+        $csvRows[0].FileName | Should -Be '20260807-1\report.txt'
+    }
+
+    It 'logs a status message and copies nothing for an AlreadyDelivered entry' {
+        $plan = @(
+            [PSCustomObject]@{ Date = '20260805'; Action = 'AlreadyDelivered'; TargetFolder = $null; Files = @(); Error = $null }
+        )
+        $statusMessages = [System.Collections.Generic.List[string]]::new()
+
+        $result = Invoke-DriveToMpnDeliveryPlan -Plan $plan -CsvLogPath $script:CsvLogPath `
+            -LogSnapshot $script:LogSnapshot -TotalFiles 0 `
+            -OnStatus { param($msg) $statusMessages.Add($msg) }
+
+        $result.FilesCopied | Should -Be 0
+        $statusMessages | Should -Contain 'Already fully delivered for 20260805, nothing to copy.'
+    }
+
+    It 'logs an error status for an Error entry without throwing' {
+        $plan = @(
+            [PSCustomObject]@{ Date = '20260806'; Action = 'Error'; TargetFolder = $null; Files = @(); Error = 'boom' }
+        )
+        $statusMessages = [System.Collections.Generic.List[string]]::new()
+
+        { Invoke-DriveToMpnDeliveryPlan -Plan $plan -CsvLogPath $script:CsvLogPath `
+            -LogSnapshot $script:LogSnapshot -TotalFiles 0 `
+            -OnStatus { param($msg) $statusMessages.Add($msg) } } | Should -Not -Throw
+
+        ($statusMessages | Where-Object { $_ -like '*boom*' }) | Should -Not -BeNullOrEmpty
+    }
+}

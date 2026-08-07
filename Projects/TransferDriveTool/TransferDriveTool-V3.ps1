@@ -1237,6 +1237,108 @@ function Resolve-DriveToMpnCopyPlan {
     @($plan)
 }
 
+# Add-CsvLogEntry reads $CsvLogPath as an ambient variable rather than a
+# parameter (see its definition above), so it must be published to global
+# scope here -- both for this function's own callers (this script's
+# background runspace already sets it that way) and so this function stays
+# independently callable/testable without relying on caller-side setup.
+function Invoke-DriveToMpnDeliveryPlan {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [object[]] $Plan,
+
+        [Parameter(Mandatory)]
+        [string] $CsvLogPath,
+
+        [Parameter(Mandatory)]
+        [PSCustomObject] $LogSnapshot,
+
+        [Parameter(Mandatory)]
+        [int] $TotalFiles,
+
+        [scriptblock] $OnStatus = {},
+        [scriptblock] $OnFileStart = {},
+        [scriptblock] $OnFileProgress = {},
+        [scriptblock] $OnFileComplete = {}
+    )
+
+    Set-Variable -Name CsvLogPath -Value $CsvLogPath -Scope Global
+
+    $filesCopied = 0
+    $filesSkipped = 0
+
+    foreach ($entry in $Plan) {
+        switch ($entry.Action) {
+            'AlreadyDelivered' {
+                & $OnStatus "Already fully delivered for $($entry.Date), nothing to copy."
+            }
+            'Error' {
+                & $OnStatus "Failed to resolve a destination folder for $($entry.Date): $($entry.Error)"
+            }
+            'Copy' {
+                if (-not (Test-Path -LiteralPath $entry.TargetFolder)) {
+                    New-Item -ItemType Directory -Path $entry.TargetFolder -Force | Out-Null
+                }
+                $targetName = Split-Path -Leaf $entry.TargetFolder
+                & $OnStatus "$($entry.Files.Count) new file(s) found for $($entry.Date), copying to $targetName"
+
+                foreach ($file in $entry.Files) {
+                    & $OnFileStart $file.RelativePath
+
+                    $destFile = Join-Path $entry.TargetFolder $file.RelativePath
+                    $destDir  = Split-Path $destFile -Parent
+                    if (-not (Test-Path -LiteralPath $destDir)) {
+                        New-Item -ItemType Directory -Path $destDir -Force | Out-Null
+                    }
+
+                    $progressCallback = {
+                        param($bytesDone, $bytesTotal)
+                        & $OnFileProgress $bytesDone $bytesTotal
+                    }.GetNewClosure()
+
+                    $copyResult = Copy-FileResumable -Source $file.FileInfo.FullName -Destination $destFile -ProgressCallback $progressCallback
+
+                    if (-not $copyResult.Success) {
+                        & $OnStatus "Failed to copy $($file.RelativePath) after retries: $($copyResult.Error)"
+                        $filesSkipped++
+                        & $OnFileComplete $filesCopied $filesSkipped $TotalFiles
+                        continue
+                    }
+
+                    & $OnStatus "Copied and hash-verified: $targetName\$($file.RelativePath)"
+
+                    try {
+                        $size = "{0:N0} KB" -f ($file.FileInfo.Length / 1KB)
+                        Add-CsvLogEntry `
+                            -DTAName        $LogSnapshot.DtaName `
+                            -Manager        $LogSnapshot.Manager `
+                            -SourceSystem   $LogSnapshot.SourceSystem `
+                            -DestSystem     $LogSnapshot.DestSystem `
+                            -FileName       "$targetName\$($file.RelativePath)" `
+                            -Classification $LogSnapshot.Classification `
+                            -FileSize       $size `
+                            -Checksum       $copyResult.DestHash `
+                            -MediaUsed      $LogSnapshot.MediaUsed `
+                            -Justification  $LogSnapshot.Justification `
+                            -ScanVerify     $LogSnapshot.ScanVerify
+
+                        $filesCopied++
+                    }
+                    catch {
+                        & $OnStatus "Failed to write CSV log for $($file.RelativePath): $($_.Exception.Message)"
+                        $filesSkipped++
+                    }
+
+                    & $OnFileComplete $filesCopied $filesSkipped $TotalFiles
+                }
+            }
+        }
+    }
+
+    [PSCustomObject]@{ FilesCopied = $filesCopied; FilesSkipped = $filesSkipped }
+}
+
 # ============================
 # INCREMENTAL COPY ENGINE (ASYNC)
 # ============================
