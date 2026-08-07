@@ -1028,6 +1028,29 @@ function Copy-FileResumable {
 }
 
 # ============================
+# DRIVE TO MPN SYNC ENGINE
+# ============================
+# Resolves what's new on the drive's dated folders vs. what's already been
+# delivered to the MPN side, and allocates an incrementally-numbered sibling
+# folder (<date>-1, <date>-2, ...) for a same-day re-run's new/changed files
+# instead of touching an already-delivered dated folder.
+function Get-DriveDatedFolders {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string] $DriveUserRoot
+    )
+
+    if (-not (Test-Path -LiteralPath $DriveUserRoot)) {
+        return @()
+    }
+
+    Get-ChildItem -LiteralPath $DriveUserRoot -Directory -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -match '^\d{8}$' } |
+        Sort-Object Name
+}
+
+# ============================
 # INCREMENTAL COPY ENGINE (ASYNC)
 # ============================
 function Copy-Files {
