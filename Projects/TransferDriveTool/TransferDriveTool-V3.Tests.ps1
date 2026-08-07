@@ -176,6 +176,15 @@ Describe 'Get-DateFolderCandidates' {
 
         $result.Count | Should -Be 0
     }
+
+    It 'returns an empty array when the root exists but has no matching date folder' {
+        $root = Join-Path $TestDrive 'Ben2'
+        New-Item -ItemType Directory -Path (Join-Path $root '20260808') -Force | Out-Null
+
+        $result = Get-DateFolderCandidates -DestUserRoot $root -Date '20260807'
+
+        $result.Count | Should -Be 0
+    }
 }
 
 Describe 'Get-NextAvailableDateSuffix' {

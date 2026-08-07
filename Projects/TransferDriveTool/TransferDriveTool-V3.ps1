@@ -1096,9 +1096,11 @@ function Get-DateFolderCandidates {
     $escapedDate = [regex]::Escape($Date)
     $pattern = "^$escapedDate(-(\d+))?$"
 
-    Get-ChildItem -LiteralPath $DestUserRoot -Directory -ErrorAction SilentlyContinue |
-        Where-Object { $_.Name -match $pattern } |
-        Sort-Object { if ($_.Name -eq $Date) { 0 } else { [int]($_.Name.Substring($Date.Length + 1)) } }
+    return @(
+        Get-ChildItem -LiteralPath $DestUserRoot -Directory -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -match $pattern } |
+            Sort-Object { if ($_.Name -eq $Date) { 0 } else { [int]($_.Name.Substring($Date.Length + 1)) } }
+    )
 }
 
 function Get-NextAvailableDateSuffix {
