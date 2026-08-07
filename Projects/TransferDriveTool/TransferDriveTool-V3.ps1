@@ -1078,6 +1078,58 @@ function Get-CompletedFileHashes {
     $hashes
 }
 
+function Get-DateFolderCandidates {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string] $DestUserRoot,
+
+        [Parameter(Mandatory)]
+        [ValidatePattern('^\d{8}$')]
+        [string] $Date
+    )
+
+    if (-not (Test-Path -LiteralPath $DestUserRoot)) {
+        return @()
+    }
+
+    $escapedDate = [regex]::Escape($Date)
+    $pattern = "^$escapedDate(-(\d+))?$"
+
+    Get-ChildItem -LiteralPath $DestUserRoot -Directory -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -match $pattern } |
+        Sort-Object { if ($_.Name -eq $Date) { 0 } else { [int]($_.Name.Substring($Date.Length + 1)) } }
+}
+
+function Get-NextAvailableDateSuffix {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string] $DestUserRoot,
+
+        [Parameter(Mandatory)]
+        [ValidatePattern('^\d{8}$')]
+        [string] $Date,
+
+        [int] $MaxSuffix = 50
+    )
+
+    $existingNames = @(Get-DateFolderCandidates -DestUserRoot $DestUserRoot -Date $Date | ForEach-Object { $_.Name })
+
+    if ($existingNames -notcontains $Date) {
+        return $Date
+    }
+
+    for ($n = 1; $n -le $MaxSuffix; $n++) {
+        $candidate = "$Date-$n"
+        if ($existingNames -notcontains $candidate) {
+            return $candidate
+        }
+    }
+
+    throw "Could not allocate a destination folder for date '$Date' under '$DestUserRoot' - all suffixes up to -$MaxSuffix are already in use."
+}
+
 # ============================
 # INCREMENTAL COPY ENGINE (ASYNC)
 # ============================
