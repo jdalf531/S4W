@@ -1045,9 +1045,11 @@ function Get-DriveDatedFolders {
         return @()
     }
 
-    Get-ChildItem -LiteralPath $DriveUserRoot -Directory -ErrorAction SilentlyContinue |
-        Where-Object { $_.Name -match '^\d{8}$' } |
-        Sort-Object Name
+    return @(
+        Get-ChildItem -LiteralPath $DriveUserRoot -Directory -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -match '^\d{8}$' } |
+            Sort-Object Name
+    )
 }
 
 # ============================

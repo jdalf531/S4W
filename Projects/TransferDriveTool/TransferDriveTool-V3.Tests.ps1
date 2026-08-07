@@ -50,6 +50,15 @@ Describe 'Get-DriveDatedFolders' {
         $result.Name | Should -Be @('20260805')
     }
 
+    It 'returns an empty array when the root exists but has no dated subfolders' {
+        $root = Join-Path $TestDrive 'Corey'
+        New-Item -ItemType Directory -Path (Join-Path $root 'Archive') -Force | Out-Null
+
+        $result = @(Get-DriveDatedFolders -DriveUserRoot $root)
+
+        $result.Count | Should -Be 0
+    }
+
     It 'returns an empty array when the root does not exist' {
         $result = @(Get-DriveDatedFolders -DriveUserRoot (Join-Path $TestDrive 'DoesNotExist'))
 
