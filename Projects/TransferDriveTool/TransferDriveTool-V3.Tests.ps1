@@ -181,7 +181,7 @@ Describe 'Get-DateFolderCandidates' {
         $root = Join-Path $TestDrive 'Ben2'
         New-Item -ItemType Directory -Path (Join-Path $root '20260808') -Force | Out-Null
 
-        $result = Get-DateFolderCandidates -DestUserRoot $root -Date '20260807'
+        $result = @(Get-DateFolderCandidates -DestUserRoot $root -Date '20260807')
 
         $result.Count | Should -Be 0
     }
@@ -511,5 +511,46 @@ Describe 'Invoke-DriveToMpnDeliveryPlan' {
             -OnStatus { param($msg) $statusMessages.Add($msg) } } | Should -Not -Throw
 
         ($statusMessages | Where-Object { $_ -like '*boom*' }) | Should -Not -BeNullOrEmpty
+    }
+
+    It 'refuses to copy into a Copy-action target folder that already exists, leaving it untouched' {
+        $targetFolder = Join-Path $TestDrive 'dest_existing\20260807'
+        New-Item -ItemType Directory -Path $targetFolder -Force | Out-Null
+        Set-Content -Path (Join-Path $targetFolder 'already_here.txt') -Value 'pre-existing content' -NoNewline
+
+        $sourceFile = Join-Path $TestDrive 'source_should_not_copy.txt'
+        Set-Content -Path $sourceFile -Value 'should not be copied' -NoNewline
+        $fileInfo = Get-Item -LiteralPath $sourceFile
+
+        $plan = @(
+            [PSCustomObject]@{
+                Date = '20260807'
+                Action = 'Copy'
+                TargetFolder = $targetFolder
+                Files = @([PSCustomObject]@{ FileInfo = $fileInfo; RelativePath = 'new_file.txt' })
+                Error = $null
+            }
+        )
+
+        $statusMessages = [System.Collections.Generic.List[string]]::new()
+
+        $result = Invoke-DriveToMpnDeliveryPlan -Plan $plan -CsvLogPath $script:CsvLogPath `
+            -LogSnapshot $script:LogSnapshot -TotalFiles 1 `
+            -OnStatus { param($msg) $statusMessages.Add($msg) }
+
+        $result.FilesCopied | Should -Be 0
+        $result.FilesSkipped | Should -Be 1
+
+        # (a) pre-existing content is completely untouched
+        (Get-Content -LiteralPath (Join-Path $targetFolder 'already_here.txt') -Raw) | Should -Be 'pre-existing content'
+
+        # (b) none of the plan entry's Files were written into it
+        Test-Path -LiteralPath (Join-Path $targetFolder 'new_file.txt') | Should -Be $false
+        $filesInTarget = @(Get-ChildItem -LiteralPath $targetFolder -File)
+        $filesInTarget.Count | Should -Be 1
+        $filesInTarget[0].Name | Should -Be 'already_here.txt'
+
+        # (d) OnStatus received a message about it
+        ($statusMessages | Where-Object { $_ -like '*already exists*' }) | Should -Not -BeNullOrEmpty
     }
 }

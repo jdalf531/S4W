@@ -1097,7 +1097,7 @@ function Get-DateFolderCandidates {
     $pattern = "^$escapedDate(-(\d+))?$"
 
     return @(
-        Get-ChildItem -LiteralPath $DestUserRoot -Directory -ErrorAction SilentlyContinue |
+        Get-ChildItem -LiteralPath $DestUserRoot -Directory -ErrorAction Stop |
             Where-Object { $_.Name -match $pattern } |
             Sort-Object { if ($_.Name -eq $Date) { 0 } else { [int]($_.Name.Substring($Date.Length + 1)) } }
     )
@@ -1277,60 +1277,73 @@ function Invoke-DriveToMpnDeliveryPlan {
                 & $OnStatus "Failed to resolve a destination folder for $($entry.Date): $($entry.Error)"
             }
             'Copy' {
-                if (-not (Test-Path -LiteralPath $entry.TargetFolder)) {
-                    New-Item -ItemType Directory -Path $entry.TargetFolder -Force | Out-Null
-                }
-                $targetName = Split-Path -Leaf $entry.TargetFolder
-                & $OnStatus "$($entry.Files.Count) new file(s) found for $($entry.Date), copying to $targetName"
-
-                foreach ($file in $entry.Files) {
-                    & $OnFileStart $file.RelativePath
-
-                    $destFile = Join-Path $entry.TargetFolder $file.RelativePath
-                    $destDir  = Split-Path $destFile -Parent
-                    if (-not (Test-Path -LiteralPath $destDir)) {
-                        New-Item -ItemType Directory -Path $destDir -Force | Out-Null
-                    }
-
-                    $progressCallback = {
-                        param($bytesDone, $bytesTotal)
-                        & $OnFileProgress $bytesDone $bytesTotal
-                    }.GetNewClosure()
-
-                    $copyResult = Copy-FileResumable -Source $file.FileInfo.FullName -Destination $destFile -ProgressCallback $progressCallback
-
-                    if (-not $copyResult.Success) {
-                        & $OnStatus "Failed to copy $($file.RelativePath) after retries: $($copyResult.Error)"
-                        $filesSkipped++
-                        & $OnFileComplete $filesCopied $filesSkipped $TotalFiles
-                        continue
-                    }
-
-                    & $OnStatus "Copied and hash-verified: $targetName\$($file.RelativePath)"
-
-                    try {
-                        $size = "{0:N0} KB" -f ($file.FileInfo.Length / 1KB)
-                        Add-CsvLogEntry `
-                            -DTAName        $LogSnapshot.DtaName `
-                            -Manager        $LogSnapshot.Manager `
-                            -SourceSystem   $LogSnapshot.SourceSystem `
-                            -DestSystem     $LogSnapshot.DestSystem `
-                            -FileName       "$targetName\$($file.RelativePath)" `
-                            -Classification $LogSnapshot.Classification `
-                            -FileSize       $size `
-                            -Checksum       $copyResult.DestHash `
-                            -MediaUsed      $LogSnapshot.MediaUsed `
-                            -Justification  $LogSnapshot.Justification `
-                            -ScanVerify     $LogSnapshot.ScanVerify
-
-                        $filesCopied++
-                    }
-                    catch {
-                        & $OnStatus "Failed to write CSV log for $($file.RelativePath): $($_.Exception.Message)"
-                        $filesSkipped++
-                    }
-
+                if (Test-Path -LiteralPath $entry.TargetFolder) {
+                    # Resolve-DriveToMpnCopyPlan should never hand back a TargetFolder
+                    # that already exists -- Get-NextAvailableDateSuffix only returns
+                    # unused names. If it somehow does anyway, treat that as an
+                    # anomaly rather than silently proceeding: this folder may already
+                    # hold delivered content, and Copy-FileResumable's Move-Item -Force
+                    # finalize would overwrite it. Log and skip these files instead of
+                    # touching an existing destination folder.
+                    $targetName = Split-Path -Leaf $entry.TargetFolder
+                    & $OnStatus "Target folder '$targetName' for $($entry.Date) already exists - refusing to copy into a pre-existing destination folder. Skipping $($entry.Files.Count) file(s)."
+                    $filesSkipped += $entry.Files.Count
                     & $OnFileComplete $filesCopied $filesSkipped $TotalFiles
+                }
+                else {
+                    New-Item -ItemType Directory -Path $entry.TargetFolder -Force | Out-Null
+                    $targetName = Split-Path -Leaf $entry.TargetFolder
+                    & $OnStatus "$($entry.Files.Count) new file(s) found for $($entry.Date), copying to $targetName"
+
+                    foreach ($file in $entry.Files) {
+                        & $OnFileStart $file.RelativePath
+
+                        $destFile = Join-Path $entry.TargetFolder $file.RelativePath
+                        $destDir  = Split-Path $destFile -Parent
+                        if (-not (Test-Path -LiteralPath $destDir)) {
+                            New-Item -ItemType Directory -Path $destDir -Force | Out-Null
+                        }
+
+                        $progressCallback = {
+                            param($bytesDone, $bytesTotal)
+                            & $OnFileProgress $bytesDone $bytesTotal
+                        }.GetNewClosure()
+
+                        $copyResult = Copy-FileResumable -Source $file.FileInfo.FullName -Destination $destFile -ProgressCallback $progressCallback
+
+                        if (-not $copyResult.Success) {
+                            & $OnStatus "Failed to copy $($file.RelativePath) after retries: $($copyResult.Error)"
+                            $filesSkipped++
+                            & $OnFileComplete $filesCopied $filesSkipped $TotalFiles
+                            continue
+                        }
+
+                        & $OnStatus "Copied and hash-verified: $targetName\$($file.RelativePath)"
+
+                        try {
+                            $size = "{0:N0} KB" -f ($file.FileInfo.Length / 1KB)
+                            Add-CsvLogEntry `
+                                -DTAName        $LogSnapshot.DtaName `
+                                -Manager        $LogSnapshot.Manager `
+                                -SourceSystem   $LogSnapshot.SourceSystem `
+                                -DestSystem     $LogSnapshot.DestSystem `
+                                -FileName       "$targetName\$($file.RelativePath)" `
+                                -Classification $LogSnapshot.Classification `
+                                -FileSize       $size `
+                                -Checksum       $copyResult.DestHash `
+                                -MediaUsed      $LogSnapshot.MediaUsed `
+                                -Justification  $LogSnapshot.Justification `
+                                -ScanVerify     $LogSnapshot.ScanVerify
+
+                            $filesCopied++
+                        }
+                        catch {
+                            & $OnStatus "Failed to write CSV log for $($file.RelativePath): $($_.Exception.Message)"
+                            $filesSkipped++
+                        }
+
+                        & $OnFileComplete $filesCopied $filesSkipped $TotalFiles
+                    }
                 }
             }
         }
@@ -1439,7 +1452,7 @@ function Copy-Files {
 
     $pbProgress.Value = 0
     $pbCurrentFile.Value = 0
-    $lblProgressSummary.Text = "Files: 0 / 0 | Copied: 0 | Skipped: 0"
+    $lblProgressSummary.Text = if ($activeTab -eq 0) { "Files: 0 / $($files.Count) | Copied: 0 | Skipped: 0" } else { "Files: 0 / 0 | Copied: 0 | Skipped: 0" }
     $lblCurrentFile.Text = "Current: (none)"
     $lblCurrentFileProgress.Text = ""
     $btnRun.IsEnabled = $false
