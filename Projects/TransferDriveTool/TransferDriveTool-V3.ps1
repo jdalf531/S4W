@@ -1388,29 +1388,40 @@ function Copy-Files {
         return
     }
 
-    $dateFolder = (Get-Date -Format "yyyyMMdd")
-    $dst = Join-Path $dstRoot $dateFolder
+    if ($activeTab -eq 0) {
+        $dateFolder = (Get-Date -Format "yyyyMMdd")
+        $dst = Join-Path $dstRoot $dateFolder
 
-    if (-not (Test-Path $dst)) {
-        Write-Status "Creating destination folder: $dst"
-        try {
-            New-Item -ItemType Directory -Path $dst -Force | Out-Null
+        if (-not (Test-Path $dst)) {
+            Write-Status "Creating destination folder: $dst"
+            try {
+                New-Item -ItemType Directory -Path $dst -Force | Out-Null
+            }
+            catch {
+                Write-Status "Failed to create destination: $($_.Exception.Message)"
+                return
+            }
         }
-        catch {
-            Write-Status "Failed to create destination: $($_.Exception.Message)"
+
+        Write-Status "Scanning source files for changes..."
+
+        $archivePrefix = (Join-Path $src "Archive") + [System.IO.Path]::DirectorySeparatorChar
+        $files = Get-ChildItem -Path $src -Recurse -File |
+            Where-Object { -not $_.FullName.StartsWith($archivePrefix, [System.StringComparison]::OrdinalIgnoreCase) }
+
+        if ($files.Count -eq 0) {
+            Write-Status "No files found to transfer."
             return
         }
     }
+    else {
+        $datedSourceFolders = Get-ChildItem -Path $src -Directory -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -match '^\d{8}$' }
 
-    Write-Status "Scanning source files for changes..."
-
-    $archivePrefix = (Join-Path $src "Archive") + [System.IO.Path]::DirectorySeparatorChar
-    $files = Get-ChildItem -Path $src -Recurse -File |
-        Where-Object { -not $_.FullName.StartsWith($archivePrefix, [System.StringComparison]::OrdinalIgnoreCase) }
-
-    if ($files.Count -eq 0) {
-        Write-Status "No files found to transfer."
-        return
+        if (-not $datedSourceFolders) {
+            Write-Status "No dated folders found under source: $src"
+            return
+        }
     }
 
     # Snapshot everything the background runspace needs from UI controls now --
@@ -1428,7 +1439,7 @@ function Copy-Files {
 
     $pbProgress.Value = 0
     $pbCurrentFile.Value = 0
-    $lblProgressSummary.Text = "Files: 0 / $($files.Count) | Copied: 0 | Skipped: 0"
+    $lblProgressSummary.Text = "Files: 0 / 0 | Copied: 0 | Skipped: 0"
     $lblCurrentFile.Text = "Current: (none)"
     $lblCurrentFileProgress.Text = ""
     $btnRun.IsEnabled = $false
@@ -1441,6 +1452,17 @@ function Copy-Files {
     $iss = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault()
     $iss.Commands.Add((New-Object System.Management.Automation.Runspaces.SessionStateFunctionEntry("Copy-FileResumable", $copyFileResumableBody)))
     $iss.Commands.Add((New-Object System.Management.Automation.Runspaces.SessionStateFunctionEntry("Add-CsvLogEntry", $addCsvLogEntryBody)))
+
+    if ($activeTab -eq 1) {
+        foreach ($functionName in @(
+            'Get-DriveDatedFolders', 'Get-CompletedFileHashes', 'Get-DateFolderCandidates',
+            'Get-NextAvailableDateSuffix', 'Get-NewFilesForDate', 'Resolve-DriveToMpnCopyPlan',
+            'Invoke-DriveToMpnDeliveryPlan'
+        )) {
+            $body = (Get-Item "Function:\$functionName").ScriptBlock.ToString()
+            $iss.Commands.Add((New-Object System.Management.Automation.Runspaces.SessionStateFunctionEntry($functionName, $body)))
+        }
+    }
 
     $runspace = [runspacefactory]::CreateRunspace($iss)
     $runspace.ApartmentState = "STA"
@@ -1456,100 +1478,240 @@ function Copy-Files {
     $runspace.SessionStateProxy.SetVariable("txtStatus", $txtStatus)
     $runspace.SessionStateProxy.SetVariable("LogFile", $LogFile)
     $runspace.SessionStateProxy.SetVariable("CsvLogPath", $CsvLogPath)
-    $runspace.SessionStateProxy.SetVariable("Files", $files)
     $runspace.SessionStateProxy.SetVariable("SrcRoot", $src)
-    $runspace.SessionStateProxy.SetVariable("DstRoot", $dst)
-    $runspace.SessionStateProxy.SetVariable("DstUserRoot", $dstRoot)
+    $runspace.SessionStateProxy.SetVariable("DstRoot", $dstRoot)
     $runspace.SessionStateProxy.SetVariable("Snapshot", $snapshot)
 
-    $batchScript = {
-        $totalFiles   = $Files.Count
-        $filesCopied  = 0
-        $filesSkipped = 0
-        $startTime    = Get-Date
+    if ($activeTab -eq 0) {
+        $runspace.SessionStateProxy.SetVariable("Files", $files)
+        # Tab 1's per-file destination join needs today's dated subfolder, not
+        # the bare root -- override the generic root value set just above.
+        $runspace.SessionStateProxy.SetVariable("DstRoot", $dst)
+        $runspace.SessionStateProxy.SetVariable("DstUserRoot", $dstRoot)
 
-        function Write-BackgroundStatus {
-            param([string]$msg)
-            $timestamp = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
-            $line = "[$timestamp] $msg"
-            Add-Content -Path $LogFile -Value $line
-            $Dispatcher.Invoke([action]{
-                $txtStatus.AppendText("$line`r`n")
-                $txtStatus.ScrollToEnd()
-            }, "Normal")
-        }
+        $batchScript = {
+            $totalFiles   = $Files.Count
+            $filesCopied  = 0
+            $filesSkipped = 0
+            $startTime    = Get-Date
 
-        function Update-BackgroundProgress {
-            $percent = [math]::Round((($filesCopied + $filesSkipped) / $totalFiles) * 100, 0)
-            $Dispatcher.Invoke([action]{
-                $pbProgress.Value = $percent
-                $lblProgressSummary.Text = "Files: $($filesCopied + $filesSkipped) / $totalFiles | Copied: $filesCopied | Skipped: $filesSkipped"
-            }, "Normal")
-        }
+            function Write-BackgroundStatus {
+                param([string]$msg)
+                $timestamp = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
+                $line = "[$timestamp] $msg"
+                Add-Content -Path $LogFile -Value $line
+                $Dispatcher.Invoke([action]{
+                    $txtStatus.AppendText("$line`r`n")
+                    $txtStatus.ScrollToEnd()
+                }, "Normal")
+            }
 
-        # Look back up to 7 days -- the same window the archive sweep uses, since
-        # anything older is already moved to Archive by then -- for two things:
-        # (1) an orphaned .partial from an interrupted transfer that crossed a
-        #     midnight boundary before today's dated folder existed, and
-        # (2) a file already fully transferred in a previous day's dated folder,
-        #     so an unchanged re-run doesn't needlessly re-copy it into today's
-        #     folder. Both keyed by relative path so the per-file loop below is
-        #     an O(1) hashtable lookup, not a repeated network Test-Path per file.
-        $orphanedPartials = @{}
-        $completedElsewhere = @{}
-        for ($daysAgo = 1; $daysAgo -le 7; $daysAgo++) {
-            $candidateDateFolder = Join-Path $DstUserRoot ((Get-Date).AddDays(-$daysAgo).ToString("yyyyMMdd"))
-            if (-not (Test-Path $candidateDateFolder)) { continue }
-            Get-ChildItem -Path $candidateDateFolder -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object {
-                if ($_.Name.EndsWith(".partial")) {
-                    $relPath = $_.FullName.Substring($candidateDateFolder.Length).TrimStart("\", "/") -replace '\.partial$', ''
-                    if (-not $orphanedPartials.ContainsKey($relPath)) {
-                        $orphanedPartials[$relPath] = $_.FullName
+            function Update-BackgroundProgress {
+                $percent = [math]::Round((($filesCopied + $filesSkipped) / $totalFiles) * 100, 0)
+                $Dispatcher.Invoke([action]{
+                    $pbProgress.Value = $percent
+                    $lblProgressSummary.Text = "Files: $($filesCopied + $filesSkipped) / $totalFiles | Copied: $filesCopied | Skipped: $filesSkipped"
+                }, "Normal")
+            }
+
+            # Look back up to 7 days -- the same window the archive sweep uses, since
+            # anything older is already moved to Archive by then -- for two things:
+            # (1) an orphaned .partial from an interrupted transfer that crossed a
+            #     midnight boundary before today's dated folder existed, and
+            # (2) a file already fully transferred in a previous day's dated folder,
+            #     so an unchanged re-run doesn't needlessly re-copy it into today's
+            #     folder. Both keyed by relative path so the per-file loop below is
+            #     an O(1) hashtable lookup, not a repeated network Test-Path per file.
+            $orphanedPartials = @{}
+            $completedElsewhere = @{}
+            for ($daysAgo = 1; $daysAgo -le 7; $daysAgo++) {
+                $candidateDateFolder = Join-Path $DstUserRoot ((Get-Date).AddDays(-$daysAgo).ToString("yyyyMMdd"))
+                if (-not (Test-Path $candidateDateFolder)) { continue }
+                Get-ChildItem -Path $candidateDateFolder -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object {
+                    if ($_.Name.EndsWith(".partial")) {
+                        $relPath = $_.FullName.Substring($candidateDateFolder.Length).TrimStart("\", "/") -replace '\.partial$', ''
+                        if (-not $orphanedPartials.ContainsKey($relPath)) {
+                            $orphanedPartials[$relPath] = $_.FullName
+                        }
                     }
-                }
-                elseif (-not $_.Name.EndsWith(".partial.meta")) {
-                    $relPath = $_.FullName.Substring($candidateDateFolder.Length).TrimStart("\", "/")
-                    if (-not $completedElsewhere.ContainsKey($relPath)) {
-                        $completedElsewhere[$relPath] = $_
+                    elseif (-not $_.Name.EndsWith(".partial.meta")) {
+                        $relPath = $_.FullName.Substring($candidateDateFolder.Length).TrimStart("\", "/")
+                        if (-not $completedElsewhere.ContainsKey($relPath)) {
+                            $completedElsewhere[$relPath] = $_
+                        }
                     }
                 }
             }
-        }
 
-        foreach ($file in $Files) {
-            $relativePath = $file.FullName.Substring($SrcRoot.Length).TrimStart("\", "/")
+            foreach ($file in $Files) {
+                $relativePath = $file.FullName.Substring($SrcRoot.Length).TrimStart("\", "/")
 
-            $Dispatcher.Invoke([action]{
-                $lblCurrentFile.Text = "Current: $relativePath"
-                $pbCurrentFile.Value = 0
-                $lblCurrentFileProgress.Text = ""
-            }, "Normal")
+                $Dispatcher.Invoke([action]{
+                    $lblCurrentFile.Text = "Current: $relativePath"
+                    $pbCurrentFile.Value = 0
+                    $lblCurrentFileProgress.Text = ""
+                }, "Normal")
 
-            $destFile = Join-Path $DstRoot $relativePath
-            $destDir = Split-Path $destFile -Parent
+                $destFile = Join-Path $DstRoot $relativePath
+                $destDir = Split-Path $destFile -Parent
 
-            if (-not (Test-Path $destDir)) {
-                New-Item -ItemType Directory -Path $destDir -Force | Out-Null
-            }
+                if (-not (Test-Path $destDir)) {
+                    New-Item -ItemType Directory -Path $destDir -Force | Out-Null
+                }
 
-            if (Test-Path $destFile) {
-                $destInfo = Get-Item $destFile
-                if ($destInfo.LastWriteTimeUtc -ge $file.LastWriteTimeUtc) {
-                    Write-BackgroundStatus "(skip) File exists (destination newer/same): $relativePath"
+                if (Test-Path $destFile) {
+                    $destInfo = Get-Item $destFile
+                    if ($destInfo.LastWriteTimeUtc -ge $file.LastWriteTimeUtc) {
+                        Write-BackgroundStatus "(skip) File exists (destination newer/same): $relativePath"
+                        $filesSkipped++
+                        Update-BackgroundProgress
+                        continue
+                    }
+                    Write-BackgroundStatus "(overwrite) File exists, source is newer: $relativePath"
+                }
+                elseif ($completedElsewhere.ContainsKey($relativePath) -and $completedElsewhere[$relativePath].LastWriteTimeUtc -ge $file.LastWriteTimeUtc) {
+                    Write-BackgroundStatus "(skip) Already transferred in a previous dated folder: $relativePath"
                     $filesSkipped++
                     Update-BackgroundProgress
                     continue
                 }
-                Write-BackgroundStatus "(overwrite) File exists, source is newer: $relativePath"
-            }
-            elseif ($completedElsewhere.ContainsKey($relativePath) -and $completedElsewhere[$relativePath].LastWriteTimeUtc -ge $file.LastWriteTimeUtc) {
-                Write-BackgroundStatus "(skip) Already transferred in a previous dated folder: $relativePath"
-                $filesSkipped++
+
+                $progressCallback = {
+                    param($bytesDone, $bytesTotal)
+                    $percent = if ($bytesTotal -gt 0) { [math]::Round(($bytesDone / $bytesTotal) * 100, 0) } else { 0 }
+                    $doneMb = [math]::Round($bytesDone / 1MB, 1)
+                    $totalMb = [math]::Round($bytesTotal / 1MB, 1)
+                    $Dispatcher.Invoke([action]{
+                        $pbCurrentFile.Value = $percent
+                        $lblCurrentFileProgress.Text = "$doneMb MB / $totalMb MB"
+                    }, "Normal")
+                }.GetNewClosure()
+
+                if (-not (Test-Path "$destFile.partial") -and $orphanedPartials.ContainsKey($relativePath)) {
+                    $orphanPartial = $orphanedPartials[$relativePath]
+                    $orphanMeta = "$orphanPartial.meta"
+                    if (Test-Path $orphanMeta) {
+                        $metaLines = @(Get-Content -LiteralPath $orphanMeta -ErrorAction SilentlyContinue)
+                        $srcInfo = Get-Item -LiteralPath $file.FullName
+                        if ($metaLines.Count -ge 2 -and $metaLines[0] -eq "$($srcInfo.Length)" -and $metaLines[1] -eq "$($srcInfo.LastWriteTimeUtc.Ticks)") {
+                            if (-not (Test-Path $destDir)) { New-Item -ItemType Directory -Path $destDir -Force | Out-Null }
+                            try {
+                                Move-Item -LiteralPath $orphanPartial -Destination "$destFile.partial" -Force
+                                Move-Item -LiteralPath $orphanMeta -Destination "$destFile.partial.meta" -Force
+                                Write-BackgroundStatus "Adopting orphaned partial copy for $relativePath (resuming across a day boundary)"
+                            }
+                            catch {
+                                Write-BackgroundStatus "Failed to adopt orphaned partial copy for $relativePath : $($_.Exception.Message)"
+                                foreach ($stray in @("$destFile.partial", "$destFile.partial.meta", $orphanPartial, $orphanMeta)) {
+                                    if (Test-Path -LiteralPath $stray) { Remove-Item -LiteralPath $stray -Force -ErrorAction SilentlyContinue }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                $result = Copy-FileResumable -Source $file.FullName -Destination $destFile -ProgressCallback $progressCallback
+
+                if (-not $result.Success) {
+                    Write-BackgroundStatus "Failed to copy $relativePath after retries: $($result.Error)"
+                    $filesSkipped++
+                    Update-BackgroundProgress
+                    continue
+                }
+
+                Write-BackgroundStatus "Copied and hash-verified: $relativePath"
+
+                try {
+                    $size = "{0:N0} KB" -f ($file.Length / 1KB)
+                    Add-CsvLogEntry `
+                        -DTAName        $Snapshot.DtaName `
+                        -Manager        $Snapshot.Manager `
+                        -SourceSystem   $Snapshot.SourceSystem `
+                        -DestSystem     $Snapshot.DestSystem `
+                        -FileName       $relativePath `
+                        -Classification $Snapshot.Classification `
+                        -FileSize       $size `
+                        -Checksum       $result.DestHash `
+                        -MediaUsed      $Snapshot.MediaUsed `
+                        -Justification  $Snapshot.Justification `
+                        -ScanVerify     $Snapshot.ScanVerify
+
+                    Write-BackgroundStatus "Logged: $relativePath"
+                    $filesCopied++
+                }
+                catch {
+                    Write-BackgroundStatus "Failed to write CSV log for $relativePath : $($_.Exception.Message)"
+                    $filesSkipped++
+                }
+
                 Update-BackgroundProgress
-                continue
             }
 
-            $progressCallback = {
+            $elapsed = (Get-Date) - $startTime
+            Write-BackgroundStatus "Transfer complete."
+            Write-BackgroundStatus "Summary: Total=$totalFiles, Copied=$filesCopied, Skipped=$filesSkipped, Elapsed=$($elapsed.ToString())"
+
+            $Dispatcher.Invoke([action]{
+                $lblCurrentFile.Text = "Current: (none)"
+                $pbCurrentFile.Value = 0
+                $lblCurrentFileProgress.Text = ""
+            }, "Normal")
+        }
+    }
+    else {
+        $batchScript = {
+            function Write-BackgroundStatus {
+                param([string]$msg)
+                $timestamp = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
+                $line = "[$timestamp] $msg"
+                Add-Content -Path $LogFile -Value $line
+                $Dispatcher.Invoke([action]{
+                    $txtStatus.AppendText("$line`r`n")
+                    $txtStatus.ScrollToEnd()
+                }, "Normal")
+            }
+
+            $startTime = Get-Date
+
+            Write-BackgroundStatus "Resolving what's new on the drive for each dated folder..."
+            $plan = @(Resolve-DriveToMpnCopyPlan -DriveUserRoot $SrcRoot -DestUserRoot $DstRoot -MaxSuffix 50)
+
+            foreach ($entry in $plan) {
+                if ($entry.Action -eq 'AlreadyDelivered') {
+                    Write-BackgroundStatus "$($entry.Date): already fully delivered, nothing to copy."
+                }
+                elseif ($entry.Action -eq 'Error') {
+                    Write-BackgroundStatus "$($entry.Date): failed to resolve a destination folder - $($entry.Error)"
+                }
+            }
+
+            $totalFiles = ($plan | Where-Object { $_.Action -eq 'Copy' } | ForEach-Object { $_.Files.Count } | Measure-Object -Sum).Sum
+            if (-not $totalFiles) { $totalFiles = 0 }
+
+            $Dispatcher.Invoke([action]{
+                $lblProgressSummary.Text = "Files: 0 / $totalFiles | Copied: 0 | Skipped: 0"
+            }, "Normal")
+
+            if ($totalFiles -eq 0) {
+                Write-BackgroundStatus "Nothing new to transfer."
+                Write-BackgroundStatus "Transfer complete."
+                $elapsed = (Get-Date) - $startTime
+                Write-BackgroundStatus "Summary: Total=0, Copied=0, Skipped=0, Elapsed=$($elapsed.ToString())"
+                return
+            }
+
+            $onStatus = { param($msg) Write-BackgroundStatus $msg }.GetNewClosure()
+
+            $onFileStart = {
+                param($relativePath)
+                $Dispatcher.Invoke([action]{
+                    $lblCurrentFile.Text = "Current: $relativePath"
+                    $pbCurrentFile.Value = 0
+                    $lblCurrentFileProgress.Text = ""
+                }, "Normal")
+            }.GetNewClosure()
+
+            $onFileProgress = {
                 param($bytesDone, $bytesTotal)
                 $percent = if ($bytesTotal -gt 0) { [math]::Round(($bytesDone / $bytesTotal) * 100, 0) } else { 0 }
                 $doneMb = [math]::Round($bytesDone / 1MB, 1)
@@ -1560,75 +1722,29 @@ function Copy-Files {
                 }, "Normal")
             }.GetNewClosure()
 
-            if (-not (Test-Path "$destFile.partial") -and $orphanedPartials.ContainsKey($relativePath)) {
-                $orphanPartial = $orphanedPartials[$relativePath]
-                $orphanMeta = "$orphanPartial.meta"
-                if (Test-Path $orphanMeta) {
-                    $metaLines = @(Get-Content -LiteralPath $orphanMeta -ErrorAction SilentlyContinue)
-                    $srcInfo = Get-Item -LiteralPath $file.FullName
-                    if ($metaLines.Count -ge 2 -and $metaLines[0] -eq "$($srcInfo.Length)" -and $metaLines[1] -eq "$($srcInfo.LastWriteTimeUtc.Ticks)") {
-                        if (-not (Test-Path $destDir)) { New-Item -ItemType Directory -Path $destDir -Force | Out-Null }
-                        try {
-                            Move-Item -LiteralPath $orphanPartial -Destination "$destFile.partial" -Force
-                            Move-Item -LiteralPath $orphanMeta -Destination "$destFile.partial.meta" -Force
-                            Write-BackgroundStatus "Adopting orphaned partial copy for $relativePath (resuming across a day boundary)"
-                        }
-                        catch {
-                            Write-BackgroundStatus "Failed to adopt orphaned partial copy for $relativePath : $($_.Exception.Message)"
-                            foreach ($stray in @("$destFile.partial", "$destFile.partial.meta", $orphanPartial, $orphanMeta)) {
-                                if (Test-Path -LiteralPath $stray) { Remove-Item -LiteralPath $stray -Force -ErrorAction SilentlyContinue }
-                            }
-                        }
-                    }
-                }
-            }
+            $onFileComplete = {
+                param($copied, $skipped, $total)
+                $percent = [math]::Round((($copied + $skipped) / $total) * 100, 0)
+                $Dispatcher.Invoke([action]{
+                    $pbProgress.Value = $percent
+                    $lblProgressSummary.Text = "Files: $($copied + $skipped) / $total | Copied: $copied | Skipped: $skipped"
+                }, "Normal")
+            }.GetNewClosure()
 
-            $result = Copy-FileResumable -Source $file.FullName -Destination $destFile -ProgressCallback $progressCallback
+            $result = Invoke-DriveToMpnDeliveryPlan -Plan $plan -CsvLogPath $CsvLogPath -LogSnapshot $Snapshot `
+                -TotalFiles $totalFiles -OnStatus $onStatus -OnFileStart $onFileStart `
+                -OnFileProgress $onFileProgress -OnFileComplete $onFileComplete
 
-            if (-not $result.Success) {
-                Write-BackgroundStatus "Failed to copy $relativePath after retries: $($result.Error)"
-                $filesSkipped++
-                Update-BackgroundProgress
-                continue
-            }
+            $elapsed = (Get-Date) - $startTime
+            Write-BackgroundStatus "Transfer complete."
+            Write-BackgroundStatus "Summary: Total=$totalFiles, Copied=$($result.FilesCopied), Skipped=$($result.FilesSkipped), Elapsed=$($elapsed.ToString())"
 
-            Write-BackgroundStatus "Copied and hash-verified: $relativePath"
-
-            try {
-                $size = "{0:N0} KB" -f ($file.Length / 1KB)
-                Add-CsvLogEntry `
-                    -DTAName        $Snapshot.DtaName `
-                    -Manager        $Snapshot.Manager `
-                    -SourceSystem   $Snapshot.SourceSystem `
-                    -DestSystem     $Snapshot.DestSystem `
-                    -FileName       $relativePath `
-                    -Classification $Snapshot.Classification `
-                    -FileSize       $size `
-                    -Checksum       $result.DestHash `
-                    -MediaUsed      $Snapshot.MediaUsed `
-                    -Justification  $Snapshot.Justification `
-                    -ScanVerify     $Snapshot.ScanVerify
-
-                Write-BackgroundStatus "Logged: $relativePath"
-                $filesCopied++
-            }
-            catch {
-                Write-BackgroundStatus "Failed to write CSV log for $relativePath : $($_.Exception.Message)"
-                $filesSkipped++
-            }
-
-            Update-BackgroundProgress
+            $Dispatcher.Invoke([action]{
+                $lblCurrentFile.Text = "Current: (none)"
+                $pbCurrentFile.Value = 0
+                $lblCurrentFileProgress.Text = ""
+            }, "Normal")
         }
-
-        $elapsed = (Get-Date) - $startTime
-        Write-BackgroundStatus "Transfer complete."
-        Write-BackgroundStatus "Summary: Total=$totalFiles, Copied=$filesCopied, Skipped=$filesSkipped, Elapsed=$($elapsed.ToString())"
-
-        $Dispatcher.Invoke([action]{
-            $lblCurrentFile.Text = "Current: (none)"
-            $pbCurrentFile.Value = 0
-            $lblCurrentFileProgress.Text = ""
-        }, "Normal")
     }
 
     $powershell = [powershell]::Create()
