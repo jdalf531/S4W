@@ -41,6 +41,8 @@ TransferDriveTool-V3.ps1       # Single-file monolithic application
   - Creates dated destination folder (YYYYMMDD format)
   - Scans source for files
   - Compares file timestamps (skip if destination is newer/equal)
+
+- `Resolve-DriveToMpnCopyPlan` / `Invoke-DriveToMpnDeliveryPlan`: Drive → MPN only. Mirrors the drive's own dated folders onto the MPN destination one-to-one; a same-day re-run with new/changed files gets an incrementally-numbered sibling folder (`<date>-1`, ...) instead of touching what's already delivered. Matching is by SHA256, not timestamp.
   
 - `Copy-WithRetry`: Handles file copy with retry logic
   - MaxRetries: 3 attempts
@@ -106,6 +108,9 @@ Every copied file is verified using SHA-256. Mismatches are logged but don't blo
 
 ### Dated Folder Structure
 Transfers are organized by date (YYYYMMDD), creating a natural daily checkpoint structure.
+
+### Drive → MPN Incremental Folders
+Unlike Tab 1 (which always writes to today's dated folder), Tab 2 mirrors each of the drive's existing per-day dated folders onto the MPN destination under the same name. If a date's destination folder already exists and the drive now has new or changed files for that date, they land in a new `<date>-1` (then `-2`, etc.) sibling folder instead of modifying the existing one. See `docs/superpowers/specs/2026-08-07-drive-to-mpn-incremental-folders-design.md` for the full design.
 
 ## Running the Application
 

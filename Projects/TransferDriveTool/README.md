@@ -53,6 +53,7 @@ Core guarantees:
 - **Preset users** per workflow, each with fixed Source/Destination paths, selectable from a dropdown.
 - **Folder Browse buttons** on every Source/Destination field to pick a path manually.
 - **Dated destination folders** (`yyyyMMdd`) — every run's output lands in its own dated folder, never mixed with a previous day's.
+- **Drive → MPN mirrors the drive's own dated folders** — rather than always writing to "today," each of the drive's per-day folders is copied to a same-named folder on the MPN side. A same-day re-run that finds new or changed files for a date that's already been delivered never touches the existing folder — it lands only the new/changed files in an incrementally-numbered sibling (`<date>-1`, `<date>-2`, ...), determined by SHA256 comparison against everything already delivered for that date.
 - **Timestamp comparison** — a file is skipped if the destination copy is already the same age or newer than the source.
 - **Non-blocking transfers** — the copy loop runs on a background PowerShell runspace; the window stays responsive (movable, resizable, and the Close button works) throughout, even on a slow multi-gigabyte network copy.
 - **Resumable, chunked copy engine** — copies in 4 MB chunks via a temporary `.partial` file; if interrupted, the *next* attempt resumes from the last completed chunk instead of restarting the whole file. Resume works:
@@ -176,9 +177,10 @@ The audit log header (both tabs use the same columns):
 LogEntryNumber,DTAName,AuthorizingManager,DateTimeUTC,SourceSystem,DestinationSystem,FileName,FileClassification,FileSize,SHA256,MediaUsed,Justification,ScanReviewVerification
 ```
 
-Example entry:
+Example entries:
 ```
 "2026-014","jdalf531","John Smith","2026-07-10 14:32Z","C:\Viper\DTA\Ben","E:\DTA\Ben","report.xlsx","Confidential","2,400 KB","A3F9E8C2D1B5...","USB_DRIVE","Monthly financial backup","Yes"
+"2026-015","jdalf531","John Smith","2026-08-07 09:10Z","E:\DTA\Kevin","\\mpn-share\Kevin","20260807-1\new_file.txt","Confidential","12 KB","B7A1...","USB_DRIVE","Same-day follow-up delivery","Yes"
 ```
 
 ## 🏗️ Architecture
@@ -221,6 +223,21 @@ Completion timer detects the runspace finished (or force-recovers on a stall)
 Re-enable Run/Close, show summary
 ```
 
+Drive → MPN (Tab 2) resolves and executes in two phases instead of a single flat scan:
+
+```
+Background runspace:
+  Phase 1 - Resolve-DriveToMpnCopyPlan, per dated folder on the drive:
+    ├─ List existing <date> / <date>-1 / <date>-2 ... folders on the MPN side
+    ├─ Hash their completed files (skip stray .partial / .partial.meta)
+    ├─ Diff against the drive's current dated folder (SHA256 compare)
+    └─ AlreadyDelivered (nothing new) | Copy (allocate next free suffix) | Error
+    ↓
+  Phase 2 - Invoke-DriveToMpnDeliveryPlan:
+    For each Copy entry: create the target folder, copy each new file
+    (Copy-FileResumable, same as Tab 1), Add-CsvLogEntry, report progress
+```
+
 ## 🔌 Function Reference
 
 #### `Copy-Files`
@@ -237,6 +254,18 @@ Appends one row to the CSV audit trail (path depends on the active tab — see [
 
 #### `Invoke-DriveArchiveSweep` / `Invoke-SourceArchiveSweep`
 Run once at launch in Commercial mode. Move dated drive folders and stale local source items (respectively) older than 1 week into an `Archive` subfolder, which is then excluded from all future transfer scans.
+
+#### `Resolve-DriveToMpnCopyPlan`
+```powershell
+Resolve-DriveToMpnCopyPlan -DriveUserRoot <path> -DestUserRoot <path> [-MaxSuffix <int> = 50]
+```
+Drive → MPN only. For each dated folder on the drive, hashes every existing `<date>[-N]` folder already on the MPN side and diffs against the drive's current content to decide whether that date is already fully delivered, needs a fresh `<date>[-N]` folder for its new/changed files, or hit an error allocating one (e.g. all 50 suffixes in use). Returns one plan entry per dated folder; never modifies anything itself.
+
+#### `Invoke-DriveToMpnDeliveryPlan`
+```powershell
+Invoke-DriveToMpnDeliveryPlan -Plan <object[]> -CsvLogPath <path> -LogSnapshot <object> -TotalFiles <int> [-OnStatus <scriptblock>] [-OnFileStart <scriptblock>] [-OnFileProgress <scriptblock>] [-OnFileComplete <scriptblock>]
+```
+Executes the `Copy` entries from a `Resolve-DriveToMpnCopyPlan` plan: creates each target folder, copies its files via `Copy-FileResumable`, and logs each success via `Add-CsvLogEntry` with the target folder name prefixed onto the logged file name (e.g. `20260807-1\report.txt`).
 
 #### `Show-FolderBrowser`
 ```powershell
