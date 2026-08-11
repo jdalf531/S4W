@@ -178,7 +178,9 @@ if ([string]::IsNullOrWhiteSpace($ApiKey)) {
         Write-Host "Existing API key found in appsettings.json - keeping it (pass -ApiKey to rotate it explicitly)." -ForegroundColor Yellow
     }
     else {
-        $ApiKey = [System.Convert]::ToBase64String([System.Security.Cryptography.RandomNumberGenerator]::GetBytes(32))
+        $keyBytes = New-Object byte[] 32
+        [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($keyBytes)
+        $ApiKey = [System.Convert]::ToBase64String($keyBytes)
         Write-Host "`nGenerated API key: $ApiKey" -ForegroundColor Yellow
         Write-Warning "Record this API key now - it will not be shown again until the closing summary. It is required to configure Submit-OSDLogs.ps1 / Get-DriverPackages.ps1 on WinPE clients."
     }
