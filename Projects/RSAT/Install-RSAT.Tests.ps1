@@ -98,3 +98,35 @@ Describe 'Get-CapabilityInstallOrder' {
         $ordered[5] | Should -Be 'Rsat.DHCP.Tools'
     }
 }
+
+Describe 'Test-RunningInWinPE' {
+    It 'returns true when the MiniNT key is present' {
+        Mock Test-Path { $true } -ParameterFilter { $LiteralPath -like '*MiniNT*' }
+        Test-RunningInWinPE | Should -BeTrue
+    }
+
+    It 'returns false when the MiniNT key is absent' {
+        Mock Test-Path { $false } -ParameterFilter { $LiteralPath -like '*MiniNT*' }
+        Test-RunningInWinPE | Should -BeFalse
+    }
+}
+
+Describe 'Get-InstallRunContext' {
+    It 'is quiet inside a task sequence even when interactive' {
+        (Get-InstallRunContext -IsTaskSequence $true -IsInteractive $true).Quiet | Should -BeTrue
+    }
+
+    It 'is quiet when unattended outside a task sequence' {
+        (Get-InstallRunContext -IsTaskSequence $false -IsInteractive $false).Quiet | Should -BeTrue
+    }
+
+    It 'is not quiet when interactive and outside a task sequence' {
+        (Get-InstallRunContext -IsTaskSequence $false -IsInteractive $true).Quiet | Should -BeFalse
+    }
+
+    It 'echoes its inputs back on the result object' {
+        $ctx = Get-InstallRunContext -IsTaskSequence $true -IsInteractive $false
+        $ctx.IsTaskSequence | Should -BeTrue
+        $ctx.IsInteractive  | Should -BeFalse
+    }
+}

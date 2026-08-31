@@ -98,3 +98,22 @@ function Get-CapabilityInstallOrder {
 
     return @($decorated | Sort-Object Rank, Original | ForEach-Object { $_.Item })
 }
+
+function Test-RunningInWinPE {
+    return [bool](Test-Path -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Control\MiniNT')
+}
+
+function Get-InstallRunContext {
+    param(
+        [Parameter(Mandatory)][bool]$IsTaskSequence,
+        [Parameter(Mandatory)][bool]$IsInteractive
+    )
+
+    $quiet = $IsTaskSequence -or (-not $IsInteractive)
+
+    return [PSCustomObject]@{
+        IsTaskSequence = $IsTaskSequence
+        IsInteractive  = $IsInteractive
+        Quiet          = $quiet
+    }
+}
