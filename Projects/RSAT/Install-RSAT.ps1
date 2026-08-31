@@ -169,3 +169,147 @@ function Get-TsEnvironmentObject {
 function Get-OSBuildNumberOnline {
     return [int](Get-ItemPropertyValue -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' -Name 'CurrentBuildNumber')
 }
+
+function Get-OSBuildNumberOffline {
+    param(
+        [Parameter(Mandatory)][string]$OfflineSystemDrive
+    )
+
+    $hivePath = Join-Path $OfflineSystemDrive 'Windows\System32\config\SOFTWARE'
+    $tempKey  = 'RSATOfflineProbe'
+
+    & reg.exe load "HKLM\$tempKey" $hivePath | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to load offline SOFTWARE hive from '$hivePath' (reg.exe exit code $LASTEXITCODE)."
+    }
+
+    try {
+        return [int](Get-ItemPropertyValue -LiteralPath "Registry::HKEY_LOCAL_MACHINE\$tempKey\Microsoft\Windows NT\CurrentVersion" -Name 'CurrentBuildNumber')
+    }
+    finally {
+        # A lingering .NET registry handle from Get-ItemPropertyValue can make
+        # `reg unload` fail with access denied; forcing a GC pass first releases it.
+        [gc]::Collect()
+        [gc]::WaitForPendingFinalizers()
+        & reg.exe unload "HKLM\$tempKey" | Out-Null
+    }
+}
+
+function Invoke-Main {
+    [CmdletBinding()]
+    param(
+        [switch]$WhatIf
+    )
+
+    $logDir = 'C:\Windows\Temp\RSAT-Install'
+    if (-not (Test-Path -LiteralPath $logDir)) {
+        New-Item -ItemType Directory -Path $logDir -Force | Out-Null
+    }
+    $script:LogFile = Join-Path $logDir "Install-RSAT_$(Get-Date -Format 'yyyyMMdd-HHmmss').log"
+
+    $tsEnvironment  = Get-TsEnvironmentObject
+    $isTaskSequence = $null -ne $tsEnvironment
+    $runContext     = Get-InstallRunContext -IsTaskSequence $isTaskSequence -IsInteractive ([Environment]::UserInteractive)
+    $script:QuietMode = $runContext.Quiet
+
+    Write-Log "RSAT install starting. TaskSequence=$isTaskSequence Interactive=$($runContext.IsInteractive) Quiet=$($script:QuietMode) WhatIf=$([bool]$WhatIf)"
+
+    if (-not (Test-IsAdministrator)) {
+        Write-Log 'BLOCKED: not running elevated (Administrator or SYSTEM required).'
+        exit (Get-ExitCodeForResult -IsElevated $false -SourceFolderFound $false -FailedCount 0 -RebootRequired $false)
+    }
+
+    $inWinPE     = Test-RunningInWinPE
+    $packageRoot = Join-Path $PSScriptRoot 'LanguagesAndOptionalFeatures'
+    $osDrive     = $null
+
+    if ($inWinPE) {
+        if (-not $isTaskSequence) {
+            Write-Log 'BLOCKED: WinPE detected but no task sequence environment; cannot resolve the target OS drive.'
+            exit (Get-ExitCodeForResult -IsElevated $true -SourceFolderFound $false -FailedCount 0 -RebootRequired $false)
+        }
+        $osDrive = $tsEnvironment.Value('OSDTargetSystemDrive')
+        if ([string]::IsNullOrWhiteSpace($osDrive)) {
+            Write-Log 'BLOCKED: OSDTargetSystemDrive task sequence variable is empty.'
+            exit (Get-ExitCodeForResult -IsElevated $true -SourceFolderFound $false -FailedCount 0 -RebootRequired $false)
+        }
+        if ($osDrive -notmatch '\\$') { $osDrive = "$osDrive\" }
+        Write-Log "WinPE / offline-image target drive: $osDrive"
+        $buildNumber = Get-OSBuildNumberOffline -OfflineSystemDrive $osDrive
+    }
+    else {
+        Write-Log 'Full-OS (online) target.'
+        $buildNumber = Get-OSBuildNumberOnline
+    }
+    Write-Log "Target OS build: $buildNumber"
+
+    $sourceFolder = Resolve-RsatSourceFolder -PackageRoot $packageRoot -BuildNumber $buildNumber
+    if (-not $sourceFolder) {
+        Write-Log "BLOCKED: no RSAT source folder for build $buildNumber under $packageRoot."
+        exit (Get-ExitCodeForResult -IsElevated $true -SourceFolderFound $false -FailedCount 0 -RebootRequired $false)
+    }
+    Write-Log "RSAT source folder: $sourceFolder"
+
+    $targetTable = Get-RsatCapabilityTable
+    $available   = if ($inWinPE) { Get-WindowsCapability -Path $osDrive } else { Get-WindowsCapability -Online }
+    $plan        = Get-CapabilityInstallOrder -Capability (Select-CapabilitiesToInstall -TargetCapability $targetTable -AvailableCapability $available)
+
+    $toInstall    = @($plan | Where-Object { $_.Action -eq 'Install' })
+    $alreadyCount = @($plan | Where-Object { $_.Action -eq 'AlreadyInstalled' }).Count
+    $notOffered   = @($plan | Where-Object { $_.Action -eq 'NotOffered' })
+
+    foreach ($n in $notOffered) {
+        Write-Log "NOT OFFERED by target OS (counts as failure): $($n.CapabilityName)"
+    }
+    Write-Log "Plan: install $($toInstall.Count), already present $alreadyCount, not offered $($notOffered.Count)."
+
+    $installedCount = 0
+    $failedCount    = $notOffered.Count
+    $rebootRequired = $false
+
+    foreach ($item in $toInstall) {
+        if ($WhatIf) {
+            Write-Log "WHATIF: would install $($item.FullName) from $sourceFolder"
+            continue
+        }
+        try {
+            $result = if ($inWinPE) {
+                Add-WindowsCapability -Path $osDrive -Name $item.FullName -Source $sourceFolder -LimitAccess -ErrorAction Stop
+            }
+            else {
+                Add-WindowsCapability -Online -Name $item.FullName -Source $sourceFolder -LimitAccess -ErrorAction Stop
+            }
+            $installedCount++
+            if ($result.RestartNeeded) { $rebootRequired = $true }
+            Write-Log "Installed $($item.CapabilityName)."
+        }
+        catch {
+            $failedCount++
+            Write-Log "FAILED $($item.CapabilityName): $($_.Exception.Message)"
+        }
+    }
+
+    if ($WhatIf) {
+        Write-Log "WHATIF complete. Would install $($toInstall.Count); $alreadyCount already present; $($notOffered.Count) not offered."
+        exit 0
+    }
+
+    $exitCode = Get-ExitCodeForResult -IsElevated $true -SourceFolderFound $true -FailedCount $failedCount -RebootRequired $rebootRequired
+    Write-Log "Done. Installed=$installedCount AlreadyPresent=$alreadyCount Failed=$failedCount RebootRequired=$rebootRequired Exit=$exitCode"
+
+    if (-not $script:QuietMode) {
+        Write-Host ''
+        Write-Host 'RSAT install summary'
+        Write-Host "  Installed:       $installedCount"
+        Write-Host "  Already present: $alreadyCount"
+        Write-Host "  Failed:          $failedCount"
+        Write-Host "  Reboot required: $rebootRequired"
+        Write-Host "  Log file:        $script:LogFile"
+    }
+
+    exit $exitCode
+}
+
+if ($MyInvocation.InvocationName -ne '.') {
+    Invoke-Main -WhatIf:$WhatIf
+}
