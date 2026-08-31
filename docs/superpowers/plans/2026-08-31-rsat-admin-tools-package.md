@@ -19,6 +19,19 @@
 > still wins over an alias), and covering tests. See the spec's Amendment
 > note. The "never falls back" constraint below now reads "never falls back
 > *except* via an explicit `BuildSourceMap` entry".
+>
+> **Post-implementation amendment 2 (2026-08-31):** a third LOF ISO
+> (`mul_..._version_26h1_..._dvd_....iso`, build **28000**, a new servicing
+> branch, filename carries no build number) was added to `media-archive/`.
+> Task 8's `Get-IsoBuildNumber` (filename parser) is **replaced** by
+> `Get-BuildFromPackageManifest` (pure: reads `10.0.<build>.<rev>` from a
+> manifest string) + `Get-CabPackageBuild` (expands `update.mum` from a cab
+> and calls the former). `Build-RsatPackage.ps1`'s `Invoke-Main` now reads
+> the build from `$cabPaths[0]` *after* mounting and verifying the cabs,
+> instead of from the ISO filename before mounting. Build 28000 gets its own
+> `28000\` source folder — no alias. Wherever the tasks below say
+> "Get-IsoBuildNumber" or "build number from the ISO filename", read
+> "Get-CabPackageBuild / build from the cab package manifest".
 
 ## Global Constraints
 
@@ -33,7 +46,7 @@
   - `Rsat.BitLocker.Recovery.Tools` ↔ `Microsoft-Windows-BitLocker-Recovery-Tools-FoD-Package`
   - `OpenSSH.Client` ↔ `OpenSSH-Client-Package`
 - **Language-neutral cab filename pattern:** `<CabStem>~31bf3856ad364e35~amd64~~.cab`. Cab-name matching is **case-insensitive** (`FoD` vs `FOD`).
-- **Supported OS builds:** `22621` (Win11 22H2) and `26100` (Win11 24H2) from real ISOs, plus `22631` (23H2) → `22621` and `26200` (25H2) → `26100` via explicit `BuildSourceMap` aliases. An unrecognized build fails fast (installer exit `2`), never guesses or falls back to another build's source *except* through an explicit `BuildSourceMap` entry.
+- **Supported OS builds:** `22621` (Win11 22H2), `26100` (Win11 24H2), and `28000` (new branch) from real ISOs, plus `22631` (23H2) → `22621` and `26200` (25H2) → `26100` via explicit `BuildSourceMap` aliases. An unrecognized build fails fast (installer exit `2`), never guesses or falls back to another build's source *except* through an explicit `BuildSourceMap` entry.
 - **Install order:** `Rsat.ServerManager.Tools`, then `Rsat.FileServices.Tools`, then `Rsat.ActiveDirectory.DS-LDS.Tools`, then the remaining 6 in any order — so cross-capability dependencies (`BitLocker→AD`, `AD→ServerManager`, `FileServices→ServerManager`, `FailoverCluster→FileServices`) resolve even if DISM's own resolution misbehaves against a source folder.
 - **`OpenSSH.Client` is pre-installed on build 26100** — the installer treats `State = Installed` as success, never re-installs.
 - **`Install-RSAT.ps1` exit codes:** `0` all installed/already present; `3010` installed + reboot required; `1` one or more failures (a capability the target OS does not offer counts as a failure); `2` no matching `<build>` source subfolder; `3` not elevated. Precedence when computing the code: not-elevated → `3`; else no-source-folder → `2`; else failures → `1`; else reboot → `3010`; else `0`.
@@ -1401,7 +1414,7 @@ This plan never runs `Add-WindowsCapability` for real. Before handing the packag
 | 9 target capabilities, name ↔ cab table | Task 1 (`RsatCapabilities.psd1`), Global Constraints |
 | Shared `.psd1` loaded by both scripts, shipped in package | Tasks 2, 8 (`Get-RsatCapabilityTable`), Task 10 (copied), Task 8 (drift-guard test) |
 | `.psd1` structural test (9 entries, non-empty fields) | Task 1, Step 5 |
-| Builder: build number from ISO filename | Task 8 (`Get-IsoBuildNumber`) |
+| Builder: build number from cab package manifest (was: ISO filename) | Task 8 (`Get-BuildFromPackageManifest` / `Get-CabPackageBuild`) — see amendment 2 |
 | Builder: verify all 9 cabs present, hard-fail naming missing | Task 9 (`Find-MissingCabFileName`, `Get-RsatCabToCopy`) |
 | Builder: case-insensitive `FoD`/`FOD` match | Task 9, Step 1 (test) + Step 3 |
 | Builder: mount read-only, copy per build, dismount in `finally` | Task 10 (`Invoke-Main`) |

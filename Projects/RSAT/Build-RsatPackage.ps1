@@ -5,12 +5,15 @@
     into a self-contained folder for MECM deployment.
 .DESCRIPTION
     Mounts each ISO under .\media-archive\ read-only, verifies all 9 cabs
-    named in RsatCapabilities.psd1 are present, copies the language-neutral
-    cab for each into <OutputPath>\LanguagesAndOptionalFeatures\<build>\,
-    then copies Install-RSAT.ps1 and RsatCapabilities.psd1 into <OutputPath>\
-    and writes manifest.json, so the whole folder can be used directly as
-    MECM package source. Run manually on an admin workstation whenever an
-    ISO is added or refreshed; not part of the deployed package.
+    named in RsatCapabilities.psd1 are present, reads the target OS build
+    from a cab's own package manifest (the 10.0.<build>.<rev> version DISM
+    matches against - so the ISO's filename format does not matter), copies
+    the language-neutral cab for each into
+    <OutputPath>\LanguagesAndOptionalFeatures\<build>\, then copies
+    Install-RSAT.ps1 and RsatCapabilities.psd1 into <OutputPath>\ and writes
+    manifest.json, so the whole folder can be used directly as MECM package
+    source. Run manually on an admin workstation whenever an ISO is added or
+    refreshed; not part of the deployed package.
 .NOTES
     Modified: 2026-08-31
 #>
@@ -38,17 +41,37 @@ function Get-RsatCapabilityTable {
     return @($data.Capabilities)
 }
 
-function Get-IsoBuildNumber {
+function Get-BuildFromPackageManifest {
     param(
-        [Parameter(Mandatory)][string]$IsoFileName
+        [Parameter(Mandatory)][string]$ManifestXml
     )
 
-    $leaf = Split-Path -Path $IsoFileName -Leaf
-    if ($leaf -match '^(?<build>\d+)\.') {
-        return [int]$Matches['build']
+    $match = [regex]::Match($ManifestXml, 'version="10\.0\.(?<build>\d+)\.\d+"')
+    if ($match.Success) {
+        return [int]$match.Groups['build'].Value
     }
 
-    throw "Could not parse an OS build number from ISO file name '$leaf'."
+    throw "Could not find a 10.0.<build>.<revision> version in the package manifest."
+}
+
+function Get-CabPackageBuild {
+    param(
+        [Parameter(Mandatory)][string]$CabPath
+    )
+
+    $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) ("rsatbuild_" + [guid]::NewGuid().ToString('n'))
+    New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
+    try {
+        & expand.exe $CabPath -F:update.mum $tempDir | Out-Null
+        $mumPath = Join-Path $tempDir 'update.mum'
+        if (-not (Test-Path -LiteralPath $mumPath)) {
+            throw "Cab '$CabPath' does not contain an update.mum to read the OS build from."
+        }
+        return Get-BuildFromPackageManifest -ManifestXml (Get-Content -LiteralPath $mumPath -Raw)
+    }
+    finally {
+        Remove-Item -LiteralPath $tempDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
 }
 
 function Get-RsatCabFileName {
@@ -121,8 +144,7 @@ function Invoke-Main {
             throw "ISO not found: $iso"
         }
 
-        $buildNumber = Get-IsoBuildNumber -IsoFileName $iso
-        Write-Host "Processing $(Split-Path $iso -Leaf) (build $buildNumber)..."
+        Write-Host "Processing $(Split-Path $iso -Leaf)..."
 
         $mount = Mount-DiskImage -ImagePath $iso -PassThru -ErrorAction Stop
         try {
@@ -133,6 +155,8 @@ function Invoke-Main {
             }
 
             $cabPaths = Get-RsatCabToCopy -SourceFolder $lofSource -CabStem $cabStems
+            $buildNumber = Get-CabPackageBuild -CabPath $cabPaths[0]
+            Write-Host "  Detected OS build $buildNumber"
 
             $destFolder = Join-Path $featuresRoot $buildNumber
             if (Test-Path -LiteralPath $destFolder) {

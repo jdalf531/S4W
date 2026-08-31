@@ -1,10 +1,10 @@
 # RSAT Admin-Tools Install Package
 
-Builds a small (~62 MB) self-contained folder that MECM uses as package
-source to install a **fixed set of 9 administrative capabilities** on
-Windows 11 — the RSAT tools an admin workstation / helpdesk actually uses,
-plus the BitLocker recovery tools and the OpenSSH client. Works in two
-deployment contexts:
+Builds a small (well under 100 MB) self-contained folder that MECM uses as
+package source to install a **fixed set of 9 administrative capabilities**
+on Windows 11 — the RSAT tools an admin workstation / helpdesk actually
+uses, plus the BitLocker recovery tools and the OpenSSH client. Works in
+two deployment contexts:
 
 - an **MECM OSD Task Sequence** step, applied to the offline OS image while
   still running in WinPE;
@@ -12,11 +12,11 @@ deployment contexts:
   running in the full online OS.
 
 The environment has no reliable path to Microsoft Update for Features on
-Demand, so all source content comes from local media: the two
-`..._CLIENT_LOF_PACKAGES_OEM.iso` files (Windows 11 22H2 build 22621 and
-24H2 build 26100) kept in `media-archive/`. Each ISO is ~6–7 GB and carries
-FOD cabs for far more than what is needed; this project extracts only the 9
-required cabs.
+Demand, so all source content comes from local media: the Windows 11
+"Languages and Optional Features" ISOs kept in `media-archive/` (currently
+22H2 / build 22621, 24H2 / build 26100, and a build-28000 branch). Each ISO
+is ~6–7 GB and carries FOD cabs for far more than what is needed; this
+project extracts only the 9 required cabs, one `<build>` folder per ISO.
 
 ---
 
@@ -62,8 +62,9 @@ Projects/RSAT/
     ├── RsatCapabilities.psd1
     ├── manifest.json             – per-build source ISO + cab list + UTC timestamp
     └── LanguagesAndOptionalFeatures/
-        ├── 22621/                – 9 cabs
-        └── 26100/                – 9 cabs
+        ├── 22621/                – 9 cabs (one folder per source ISO)
+        ├── 26100/                – 9 cabs
+        └── 28000/                – 9 cabs
 ```
 
 Design spec and implementation plan live with the other projects' docs at
@@ -85,14 +86,16 @@ only Windows PowerShell 5.1 (mounts ISOs via `Mount-DiskImage`).
 .\Build-RsatPackage.ps1 -IsoPath D:\iso\26100...OEM.iso -OutputPath C:\temp\RSAT-Install
 ```
 
-Per ISO the builder parses the build number from the filename, mounts the
-ISO read-only, **verifies all 9 cabs are present** (hard-fails naming any
-that are missing), copies them into `LanguagesAndOptionalFeatures\<build>\`,
-and dismounts. It then copies `Install-RSAT.ps1` + `RsatCapabilities.psd1`
-into the output and writes `manifest.json`. Re-running rebuilds only the
-affected build's subfolder. The whole `RSAT-Install\` folder is the MECM
-package source — wiring it into an MECM Package / TS step is a manual step
-in the ConfigMgr console.
+Per ISO the builder mounts it read-only, **verifies all 9 cabs are
+present** (hard-fails naming any that are missing), **reads the OS build
+from a cab's own package manifest** (`10.0.<build>.<rev>` — the value DISM
+matches against, so the ISO's filename format is irrelevant), copies the
+cabs into `LanguagesAndOptionalFeatures\<build>\`, and dismounts. It then
+copies `Install-RSAT.ps1` + `RsatCapabilities.psd1` into the output and
+writes `manifest.json`. Re-running rebuilds only the affected build's
+subfolder. The whole `RSAT-Install\` folder is the MECM package source —
+wiring it into an MECM Package / TS step is a manual step in the ConfigMgr
+console.
 
 ---
 
@@ -139,6 +142,7 @@ readable summary only when run interactively outside a task sequence.
 | 22631 (Win11 23H2) | `\22621\` (alias — same servicing branch) |
 | 26100 (Win11 24H2) | `\26100\` |
 | 26200 (Win11 25H2) | `\26100\` (alias — same servicing branch) |
+| 28000 (new branch) | `\28000\` |
 | anything else | none → exit `2` |
 
 Aliases live in `BuildSourceMap` in `RsatCapabilities.psd1`. An exact
@@ -153,16 +157,20 @@ fails fast — the script never guesses.
 Invoke-Pester -Path .\RsatCapabilities.Tests.ps1,.\Build-RsatPackage.Tests.ps1,.\Install-RSAT.Tests.ps1 -Output Detailed
 ```
 
-48 Pester tests over the pure decision/parsing logic (capability selection,
-install ordering, build/alias resolution, cab verification, exit-code
-selection, WinPE detection, run-context). The tests never mount an ISO,
-load a real hive, or call a real DISM cmdlet.
+49 Pester tests over the pure decision/parsing logic (capability selection,
+install ordering, build detection from a package manifest, build/alias
+resolution, cab verification, exit-code selection, WinPE detection,
+run-context). The tests never mount an ISO, load a real hive, or call a
+real DISM cmdlet.
 
 **Before handoff to helpdesk**, validate the real DISM path manually (no
 task in this repo runs `Add-WindowsCapability` for real automatically):
 
-1. On a real 22H2/23H2/24H2/25H2 machine — run `Install-RSAT.ps1` elevated,
-   confirm exit `0`/`3010` and that the tools + `ssh.exe` appear.
+1. On a real 22H2/23H2/24H2/25H2/26H2 machine — run `Install-RSAT.ps1`
+   elevated, confirm exit `0`/`3010` and that the tools + `ssh.exe` appear.
+   For the 28000 branch, confirm the machine's `CurrentBuildNumber` is
+   actually `28000` — if it reports something else, add a one-line
+   `BuildSourceMap` alias to `28000`.
 2. Wire `RSAT-Install\` into an MECM Package + a test OSD task sequence step
    in WinPE, confirm the offline path works. This needs the ConfigMgr boot
    image to include the storage/scripting WinPE optional components
@@ -172,10 +180,11 @@ task in this repo runs `Add-WindowsCapability` for real automatically):
 
 ## Maintenance
 
-- **New Windows release on an existing branch** (e.g. a future 26xxx build):
-  add one line to `BuildSourceMap`.
-- **New servicing branch / new ISO**: drop the `..._CLIENT_LOF_PACKAGES_OEM.iso`
-  into `media-archive/`, re-run `Build-RsatPackage.ps1`.
+- **New Windows release on an existing branch** (an enablement package —
+  e.g. 23H2 on 22H2, 25H2 on 24H2): add one line to `BuildSourceMap`.
+- **New servicing branch / new ISO**: drop the LOF ISO into `media-archive/`
+  (any filename), re-run `Build-RsatPackage.ps1` — it reads the build from
+  the cab manifests and creates the `<build>` folder automatically.
 - **Add / remove / rename a capability**: edit `RsatCapabilities.psd1`
   (one file); the builder's "all 9 cabs present" check will flag a renamed
   cab stem loudly on the next build.

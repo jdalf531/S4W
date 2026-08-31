@@ -17,17 +17,24 @@ Describe 'Get-RsatCapabilityTable (builder copy)' {
     }
 }
 
-Describe 'Get-IsoBuildNumber' {
-    It 'parses the build number from a 22H2 ISO filename' {
-        Get-IsoBuildNumber -IsoFileName 'C:\isos\22621.1.220506-1250.ni_release_amd64fre_CLIENT_LOF_PACKAGES_OEM.iso' | Should -Be 22621
+Describe 'Get-BuildFromPackageManifest' {
+    It 'reads the build number from a package manifest version string' {
+        $xml = '<assemblyIdentity name="Microsoft-Windows-DNS-Tools-FoD-Package" version="10.0.28000.1" processorArchitecture="amd64" language="neutral" />'
+        Get-BuildFromPackageManifest -ManifestXml $xml | Should -Be 28000
     }
 
-    It 'parses the build number from a 24H2 ISO filename' {
-        Get-IsoBuildNumber -IsoFileName '26100.1.240331-1435.ge_release_amd64fre_CLIENT_LOF_PACKAGES_OEM.iso' | Should -Be 26100
+    It 'reads 22621 / 26100 style builds too' {
+        Get-BuildFromPackageManifest -ManifestXml 'foo version="10.0.22621.1" bar' | Should -Be 22621
+        Get-BuildFromPackageManifest -ManifestXml 'foo version="10.0.26100.1" bar' | Should -Be 26100
     }
 
-    It 'throws when the filename does not start with a build number' {
-        { Get-IsoBuildNumber -IsoFileName 'not-an-iso-name.iso' } | Should -Throw
+    It 'ignores non-10.0 version strings and reads the OS build' {
+        $xml = '<package version="1.0" /><assemblyIdentity version="10.0.26200.2" />'
+        Get-BuildFromPackageManifest -ManifestXml $xml | Should -Be 26200
+    }
+
+    It 'throws when no 10.0.<build>.<revision> version is present' {
+        { Get-BuildFromPackageManifest -ManifestXml '<node version="1.2.3" />' } | Should -Throw
     }
 }
 

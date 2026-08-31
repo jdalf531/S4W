@@ -19,6 +19,15 @@ Status: Approved for implementation
 > them. The installer now resolves `22631` → `22621` and `26200` → `26100`.
 > Unmapped unknown builds still fail fast (exit 2) — the alias table is
 > explicit, not a "use whatever is newest" fallback.
+>
+> **Amendment (2026-08-31, third revision):** the builder no longer parses
+> the OS build from the ISO filename — a third LOF ISO
+> (`mul_..._version_26h1_..._dvd_....iso`, build 28000, a new servicing
+> branch) carries no build number in its name. The builder now reads the
+> build from a cab's own package manifest (`update.mum` — the
+> `10.0.<build>.<revision>` version DISM matches against), which is
+> authoritative and filename-independent. Build 28000 gets its own `28000\`
+> source folder (no alias — it is its own branch).
 
 ## Purpose
 
@@ -34,23 +43,23 @@ two ways:
   full OS.
 
 The environment has no reliable path to Microsoft Update for Features on
-Demand (FOD), so the source content has to come from local media: two
-`..._CLIENT_LOF_PACKAGES_OEM.iso` files (Windows 11 22H2 build 22621, and
-24H2 build 26100). Each ISO is ~6–7 GB and contains FOD cabs for far more
-than what is needed (Notepad, Paint, printing, WSUS tools, 30+ per-language
-variants of everything, etc.), so it is not practical to hand the ISO
-itself to MECM.
+Demand (FOD), so the source content has to come from local media: the
+Windows 11 "Languages and Optional Features" ISOs kept in `media-archive\`
+(currently 22H2 build 22621, 24H2 build 26100, and a build-28000 branch).
+Each ISO is ~6–7 GB and contains FOD cabs for far more than what is needed
+(Notepad, Paint, printing, WSUS tools, 30+ per-language variants of
+everything, etc.), so it is not practical to hand the ISO itself to MECM.
 
-This project produces a small folder (~62 MB) that drops straight into an
-MECM package: just the cabs for the 9 required capabilities, both OS
-builds, plus one install script that adapts to whichever of the two
-contexts above it is running in.
+This project produces a small folder (well under 100 MB) that drops
+straight into an MECM package: just the cabs for the 9 required
+capabilities, one `<build>` folder per ISO, plus one install script that
+adapts to whichever of the two contexts above it is running in.
 
 ## Scope
 
 **In scope:**
 - A builder script that extracts the 9 required language-neutral cabs from
-  both ISOs into a deployable output folder.
+  each ISO in `media-archive\` into a deployable output folder.
 - An install script, shipped inside that output folder, that installs those
   9 capabilities whether it is running in WinPE against an offline image or
   in a full online OS.
@@ -169,13 +178,15 @@ Not part of the deployed package.
   - `-OutputPath` (string, optional) — defaults to `.\RSAT-Install` next to
     the script.
 - **Per ISO:**
-  1. Read the OS build number from the ISO's filename — the leading numeric
-     segment (e.g. `22621` from `22621.1.220506-1250.ni_release_...iso`).
-     A filename that does not parse as `<digits>.*` is a hard stop.
-  2. Mount it (`Mount-DiskImage`).
-  3. Verify **all 9** expected language-neutral cabs are present under
+  1. Mount it (`Mount-DiskImage`).
+  2. Verify **all 9** expected language-neutral cabs are present under
      `LanguagesAndOptionalFeatures\`. If any is missing, hard stop naming
      the missing cab(s) — no partial output.
+  3. Read the OS build number from the first matched cab's package manifest
+     — expand `update.mum` and take the `10.0.<build>.<revision>` version
+     (the value DISM matches a capability against). This is authoritative
+     and independent of the ISO's filename, which need not carry a build
+     number at all. No `10.0.*` version in the manifest is a hard stop.
   4. Copy the 9 cabs into
      `<OutputPath>\LanguagesAndOptionalFeatures\<build>\`, preserving
      filenames as-is.
@@ -244,11 +255,13 @@ contexts.
 
 ## Archived source media
 
-The two original ISOs move from `Projects/RSAT/` into
-`Projects/RSAT/media-archive/`. They stay git-ignored (6–7 GB each). A short
-`media-archive/README.md` records what they are, their build numbers, and
-that `Build-RsatPackage.ps1` reads from this folder by default. The
-originals are never modified — the builder mounts them read-only.
+All source ISOs live in `Projects/RSAT/media-archive/`, git-ignored
+(~6–7 GB each). A short `media-archive/README.md` records what they are and
+their build numbers, and that `Build-RsatPackage.ps1` reads every `*.iso`
+in this folder by default. The originals are never modified — the builder
+mounts them read-only. Adding a new Windows branch is just dropping its LOF
+ISO here and re-running the builder; the ISO filename need not follow any
+particular format (the build is read from the cab manifests, not the name).
 
 ## Testing
 
@@ -262,10 +275,11 @@ tests never execute the script body.
   `Import-PowerShellDataFile`, has exactly 9 entries with non-empty
   `CapabilityName` / `CabStem`, maps `22631` → `22621` and `26200` →
   `26100`, and only aliases to a build that a real ISO produces.
-- `Build-RsatPackage.ps1`: build-number-from-filename parsing (valid /
-  unparseable); "all 9 cabs present" verification given a fake file listing
-  (complete / one missing / case-variant `FOD` token); cab selection
-  produces exactly the 9 expected paths.
+- `Build-RsatPackage.ps1`: build-number-from-package-manifest parsing
+  (28000 / 22621 / 26100 style version strings, non-`10.0` versions ignored,
+  no version → throw); "all 9 cabs present" verification given a fake file
+  listing (complete / one missing / case-variant `FOD` token); cab
+  selection produces exactly the 9 expected paths.
 - `Install-RSAT.ps1`: source-folder resolution (exact match / no match /
   alias followed / exact preferred over alias / alias target missing);
   `BuildSourceMap` loading (present / absent → empty map);
@@ -284,9 +298,10 @@ plan and never run automatically by any task.
 
 ## Error handling
 
-- **Builder:** missing/unreadable ISO, unparseable filename, mount failure,
-  any of the 9 expected cabs missing from a build, and an unwritable output
-  path are all hard stops with a clear message — no partial or silent
+- **Builder:** missing/unreadable ISO, mount failure, any of the 9 expected
+  cabs missing from an ISO, a cab whose manifest carries no `10.0.*` build
+  version, and an unwritable output path are all hard stops with a clear
+  message — no partial or silent
   output.
 - **Installer:** every failure mode has a defined exit code and a log entry
   describing what was attempted and why it failed, since a helpdesk tech —

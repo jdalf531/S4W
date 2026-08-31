@@ -40,7 +40,7 @@ Describe 'RsatCapabilities.psd1' {
     }
 
     It 'only aliases builds to a source folder that a real ISO produces' {
-        $isoBuilds = @('22621', '26100')
+        $isoBuilds = @('22621', '26100', '28000')
         foreach ($target in $script:Data.BuildSourceMap.Values) {
             $isoBuilds | Should -Contain $target
         }
