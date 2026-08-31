@@ -117,3 +117,18 @@ function Get-InstallRunContext {
         Quiet          = $quiet
     }
 }
+
+function Get-ExitCodeForResult {
+    param(
+        [Parameter(Mandatory)][bool]$IsElevated,
+        [Parameter(Mandatory)][bool]$SourceFolderFound,
+        [Parameter(Mandatory)][int]$FailedCount,
+        [Parameter(Mandatory)][bool]$RebootRequired
+    )
+
+    if (-not $IsElevated)        { return 3 }
+    if (-not $SourceFolderFound) { return 2 }
+    if ($FailedCount -gt 0)      { return 1 }
+    if ($RebootRequired)         { return 3010 }
+    return 0
+}

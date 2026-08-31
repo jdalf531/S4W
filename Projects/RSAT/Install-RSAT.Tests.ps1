@@ -130,3 +130,25 @@ Describe 'Get-InstallRunContext' {
         $ctx.IsInteractive  | Should -BeFalse
     }
 }
+
+Describe 'Get-ExitCodeForResult' {
+    It 'returns 3 when not elevated, regardless of other inputs' {
+        Get-ExitCodeForResult -IsElevated $false -SourceFolderFound $true -FailedCount 5 -RebootRequired $true | Should -Be 3
+    }
+
+    It 'returns 2 when elevated but no matching source folder' {
+        Get-ExitCodeForResult -IsElevated $true -SourceFolderFound $false -FailedCount 0 -RebootRequired $false | Should -Be 2
+    }
+
+    It 'returns 1 when one or more capabilities failed' {
+        Get-ExitCodeForResult -IsElevated $true -SourceFolderFound $true -FailedCount 1 -RebootRequired $false | Should -Be 1
+    }
+
+    It 'returns 3010 when everything succeeded but a reboot is needed' {
+        Get-ExitCodeForResult -IsElevated $true -SourceFolderFound $true -FailedCount 0 -RebootRequired $true | Should -Be 3010
+    }
+
+    It 'returns 0 when everything succeeded and no reboot is needed' {
+        Get-ExitCodeForResult -IsElevated $true -SourceFolderFound $true -FailedCount 0 -RebootRequired $false | Should -Be 0
+    }
+}
