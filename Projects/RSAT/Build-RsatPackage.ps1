@@ -50,3 +50,45 @@ function Get-IsoBuildNumber {
 
     throw "Could not parse an OS build number from ISO file name '$leaf'."
 }
+
+function Get-RsatCabFileName {
+    param(
+        [Parameter(Mandatory)][string]$CabStem
+    )
+
+    return "$CabStem~31bf3856ad364e35~amd64~~.cab"
+}
+
+function Find-MissingCabFileName {
+    param(
+        [Parameter(Mandatory)][AllowEmptyCollection()][string[]]$AvailableFileName,
+        [Parameter(Mandatory)][string[]]$CabStem
+    )
+
+    $availableLower = @($AvailableFileName | ForEach-Object { $_.ToLowerInvariant() })
+
+    $missing = foreach ($stem in $CabStem) {
+        $expected = Get-RsatCabFileName -CabStem $stem
+        if ($availableLower -notcontains $expected.ToLowerInvariant()) {
+            $expected
+        }
+    }
+
+    return @($missing)
+}
+
+function Get-RsatCabToCopy {
+    param(
+        [Parameter(Mandatory)][string]$SourceFolder,
+        [Parameter(Mandatory)][string[]]$CabStem
+    )
+
+    $available = @(Get-ChildItem -LiteralPath $SourceFolder -Filter '*.cab' -File | ForEach-Object Name)
+
+    $missing = Find-MissingCabFileName -AvailableFileName $available -CabStem $CabStem
+    if ($missing.Count -gt 0) {
+        throw "Source folder '$SourceFolder' is missing $($missing.Count) required cab(s): $($missing -join ', ')"
+    }
+
+    return @($CabStem | ForEach-Object { Join-Path $SourceFolder (Get-RsatCabFileName -CabStem $_) })
+}
