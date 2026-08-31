@@ -40,15 +40,41 @@ function Get-RsatCapabilityTable {
     return @($data.Capabilities)
 }
 
+function Get-RsatBuildSourceMap {
+    param(
+        [string]$DataFilePath = (Join-Path $PSScriptRoot 'RsatCapabilities.psd1')
+    )
+
+    if (-not (Test-Path -LiteralPath $DataFilePath -PathType Leaf)) {
+        throw "RSAT capability data file not found: $DataFilePath"
+    }
+
+    $data = Import-PowerShellDataFile -LiteralPath $DataFilePath
+    if ($data.BuildSourceMap) {
+        return [hashtable]$data.BuildSourceMap
+    }
+
+    return @{}
+}
+
 function Resolve-RsatSourceFolder {
     param(
         [Parameter(Mandatory)][string]$PackageRoot,
-        [Parameter(Mandatory)][int]$BuildNumber
+        [Parameter(Mandatory)][int]$BuildNumber,
+        [hashtable]$BuildSourceMap = @{}
     )
 
-    $candidate = Join-Path $PackageRoot $BuildNumber
-    if (Test-Path -LiteralPath $candidate -PathType Container) {
-        return $candidate
+    # An exact <build> subfolder always wins over an alias.
+    $exact = Join-Path $PackageRoot "$BuildNumber"
+    if (Test-Path -LiteralPath $exact -PathType Container) {
+        return $exact
+    }
+
+    if ($BuildSourceMap.ContainsKey("$BuildNumber")) {
+        $mapped = Join-Path $PackageRoot ([string]$BuildSourceMap["$BuildNumber"])
+        if (Test-Path -LiteralPath $mapped -PathType Container) {
+            return $mapped
+        }
     }
 
     return $null
@@ -243,10 +269,14 @@ function Invoke-Main {
     }
     Write-Log "Target OS build: $buildNumber"
 
-    $sourceFolder = Resolve-RsatSourceFolder -PackageRoot $packageRoot -BuildNumber $buildNumber
+    $buildSourceMap = Get-RsatBuildSourceMap
+    $sourceFolder = Resolve-RsatSourceFolder -PackageRoot $packageRoot -BuildNumber $buildNumber -BuildSourceMap $buildSourceMap
     if (-not $sourceFolder) {
         Write-Log "BLOCKED: no RSAT source folder for build $buildNumber under $packageRoot."
         exit (Get-ExitCodeForResult -IsElevated $true -SourceFolderFound $false -FailedCount 0 -RebootRequired $false)
+    }
+    if ((Split-Path $sourceFolder -Leaf) -ne "$buildNumber") {
+        Write-Log "Build $buildNumber has no dedicated source; using aliased folder $(Split-Path $sourceFolder -Leaf)."
     }
     Write-Log "RSAT source folder: $sourceFolder"
 

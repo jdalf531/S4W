@@ -10,6 +10,14 @@ Status: Approved for implementation
 > the original ISOs are retained as archived historical media. An ISO-based
 > deliverable was considered and rejected (extra mount/dismount steps in both
 > deployment contexts for no benefit).
+>
+> **Amendment (2026-08-31, later same day):** added a `BuildSourceMap` alias
+> table in `RsatCapabilities.psd1`. Windows 11 25H2 (build 26200) is an
+> enablement package on 24H2's (26100) servicing branch and the FoD cab
+> manifests declare `buildCompare="GE"` against the 26100 EditionPack, so the
+> 26100 cabs install on 26200. The installer now resolves 26200 to the 26100
+> source folder. Unmapped unknown builds still fail fast (exit 2) — the alias
+> table is explicit, not a "use whatever is newest" fallback.
 
 ## Purpose
 
@@ -131,13 +139,23 @@ each script's `Invoke-Main` and is verified manually.
 
 Both scripts need the 9-row table above, so it lives once in a data file,
 `RsatCapabilities.psd1`, next to the scripts in the repo. It is a plain
-PowerShell data file: an array of hashtables, each with `CapabilityName`
-and `CabStem`. Both scripts load it with `Import-PowerShellDataFile` from
-their own `$PSScriptRoot`; the builder uses the `CabStem` values, the
-installer uses the `CapabilityName` values. The builder copies this file
-into `<OutputPath>\` alongside `Install-RSAT.ps1` so the deployed package
-is self-contained. Tests load the `.psd1` directly. A missing or malformed
-`.psd1` is a hard stop in either script.
+PowerShell data file with two keys:
+
+- `Capabilities` — an array of hashtables, each with `CapabilityName` and
+  `CabStem`. The builder uses the `CabStem` values; the installer uses the
+  `CapabilityName` values.
+- `BuildSourceMap` — a hashtable of `<OS build>` → `<source-folder build>`
+  aliases, for OS builds that have no ISO of their own but whose FoD cabs
+  are satisfied by another build's folder (currently `26200` → `26100`, for
+  Windows 11 25H2 on the 24H2 servicing branch). Only the installer reads
+  it.
+
+Both scripts load it with `Import-PowerShellDataFile` from their own
+`$PSScriptRoot`. The builder copies this file into `<OutputPath>\`
+alongside `Install-RSAT.ps1` so the deployed package is self-contained.
+Tests load the `.psd1` directly. A missing or malformed `.psd1` is a hard
+stop in either script; a `.psd1` with no `BuildSourceMap` is treated as an
+empty map (alias resolution simply never fires).
 
 ### 1. `Build-RsatPackage.ps1`
 
@@ -180,9 +198,11 @@ contexts.
 
 - **OS build match:** reads `CurrentBuildNumber` from
   `HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion` (online) or from the
-  offline hive (WinPE case), and selects the matching
-  `LanguagesAndOptionalFeatures\<build>\` subfolder next to itself. No
-  matching subfolder → exit `2`, nothing attempted.
+  offline hive (WinPE case), then resolves a source folder: an exact
+  `LanguagesAndOptionalFeatures\<build>\` subfolder next to the script wins;
+  failing that, if `BuildSourceMap` aliases this build to another and that
+  folder exists, it is used (and the aliasing is logged); otherwise exit
+  `2`, nothing attempted.
 - **WinPE vs full OS:** detected via presence of
   `HKLM:\SYSTEM\CurrentControlSet\Control\MiniNT`.
   - **WinPE (OSD TS):** target is the offline image. Resolves the offline OS
@@ -217,8 +237,8 @@ contexts.
   - `0` — all 9 installed or already present.
   - `3010` — installed, but DISM reported a reboot is needed.
   - `1` — one or more capabilities failed; log has details.
-  - `2` — no matching `<build>` source subfolder for this OS; nothing
-    attempted.
+  - `2` — no source folder for this OS build (no exact `<build>` subfolder
+    and no usable `BuildSourceMap` alias); nothing attempted.
   - `3` — not elevated.
 
 ## Archived source media
@@ -238,13 +258,16 @@ factored into named functions each script exposes for dot-sourcing, with a
 tests never execute the script body.
 
 - `RsatCapabilities.psd1`: a test asserts it loads via
-  `Import-PowerShellDataFile`, has exactly 9 entries, and every entry has a
-  non-empty `CapabilityName` and `CabStem`.
+  `Import-PowerShellDataFile`, has exactly 9 entries with non-empty
+  `CapabilityName` / `CabStem`, maps `26200` → `26100`, and only aliases to
+  a build that a real ISO produces.
 - `Build-RsatPackage.ps1`: build-number-from-filename parsing (valid /
   unparseable); "all 9 cabs present" verification given a fake file listing
   (complete / one missing / case-variant `FOD` token); cab selection
   produces exactly the 9 expected paths.
-- `Install-RSAT.ps1`: build-subfolder resolution (match / no match);
+- `Install-RSAT.ps1`: source-folder resolution (exact match / no match /
+  alias followed / exact preferred over alias / alias target missing);
+  `BuildSourceMap` loading (present / absent → empty map);
   capability filtering given fake `Get-WindowsCapability` output
   (not-present → install, already-installed → skip, offered-but-in-target
   vs not-offered); install ordering (ServerManager / FileServices /
@@ -270,8 +293,11 @@ plan and never run automatically by any task.
 
 ## Open questions
 
-None blocking. The 9-capability table is static and lives in one file,
-`RsatCapabilities.psd1`; adding, removing, or renaming a capability is a
-deliberate one-file edit the next time an ISO is refreshed. If a future
-Windows build ships a cab under a renamed stem, the builder's "all 9 cabs
-present" check fails loudly rather than producing a short package.
+None blocking. The 9-capability table and the `BuildSourceMap` both live in
+one file, `RsatCapabilities.psd1`; adding/renaming a capability or aliasing
+a new OS build to an existing folder is a deliberate one-file edit. If a
+future Windows build ships a cab under a renamed stem, the builder's "all 9
+cabs present" check fails loudly rather than producing a short package. If
+a future 23H2-style enablement build (e.g. 22631 on the 22H2 branch) needs
+covering, add it to `BuildSourceMap` — it is not there yet because only
+25H2 was confirmed compatible.

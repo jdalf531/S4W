@@ -20,6 +20,21 @@ Describe 'Get-RsatCapabilityTable' {
     }
 }
 
+Describe 'Get-RsatBuildSourceMap' {
+    It 'returns the alias map from the real psd1 (25H2 -> 24H2)' {
+        $map = Get-RsatBuildSourceMap
+        $map['26200'] | Should -Be '26100'
+    }
+
+    It 'returns an empty hashtable when the psd1 has no BuildSourceMap' {
+        $noMap = Join-Path $TestDrive 'nomap.psd1'
+        Set-Content -LiteralPath $noMap -Value "@{ Capabilities = @(@{ CapabilityName = 'X'; CabStem = 'Y' }) }"
+        $result = Get-RsatBuildSourceMap -DataFilePath $noMap
+        $result | Should -BeOfType [hashtable]
+        $result.Count | Should -Be 0
+    }
+}
+
 Describe 'Resolve-RsatSourceFolder' {
     BeforeAll {
         $script:PackageRoot = Join-Path $TestDrive 'LanguagesAndOptionalFeatures'
@@ -32,8 +47,25 @@ Describe 'Resolve-RsatSourceFolder' {
             Should -Be (Join-Path $script:PackageRoot '22621')
     }
 
-    It 'returns null when no subfolder matches the build number' {
+    It 'returns null when no subfolder matches and there is no alias' {
         Resolve-RsatSourceFolder -PackageRoot $script:PackageRoot -BuildNumber 99999 | Should -BeNullOrEmpty
+    }
+
+    It 'follows the alias map when the build has no dedicated subfolder' {
+        Resolve-RsatSourceFolder -PackageRoot $script:PackageRoot -BuildNumber 26200 -BuildSourceMap @{ '26200' = '26100' } |
+            Should -Be (Join-Path $script:PackageRoot '26100')
+    }
+
+    It 'prefers an exact subfolder over an alias' {
+        New-Item -ItemType Directory -Path (Join-Path $script:PackageRoot '26200') -Force | Out-Null
+        Resolve-RsatSourceFolder -PackageRoot $script:PackageRoot -BuildNumber 26200 -BuildSourceMap @{ '26200' = '26100' } |
+            Should -Be (Join-Path $script:PackageRoot '26200')
+        Remove-Item -LiteralPath (Join-Path $script:PackageRoot '26200') -Recurse -Force
+    }
+
+    It 'returns null when the alias target subfolder itself is missing' {
+        Resolve-RsatSourceFolder -PackageRoot $script:PackageRoot -BuildNumber 26200 -BuildSourceMap @{ '26200' = '99999' } |
+            Should -BeNullOrEmpty
     }
 }
 

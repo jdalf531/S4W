@@ -32,4 +32,16 @@ Describe 'RsatCapabilities.psd1' {
         $names | Should -Contain 'OpenSSH.Client'
         $names | Should -Contain 'Rsat.BitLocker.Recovery.Tools'
     }
+
+    It 'maps 25H2 (build 26200) to the 26100 source folder' {
+        $script:Data.BuildSourceMap | Should -Not -BeNullOrEmpty
+        $script:Data.BuildSourceMap['26200'] | Should -Be '26100'
+    }
+
+    It 'only aliases builds to a source folder that a real ISO produces' {
+        $isoBuilds = @('22621', '26100')
+        foreach ($target in $script:Data.BuildSourceMap.Values) {
+            $isoBuilds | Should -Contain $target
+        }
+    }
 }
