@@ -2,7 +2,7 @@
     # The complete, fixed set of capabilities the RSAT admin-tools package
     # installs. Authored in install-priority order: ServerManager, then
     # FileServices, then ActiveDirectory-DS-LDS (dependency roots), then the
-    # rest. Single source of truth — Build-RsatPackage.ps1 uses CabStem,
+    # rest. Single source of truth - Build-RsatPackage.ps1 uses CabStem,
     # Install-RSAT.ps1 uses CapabilityName. Edit here only.
     Capabilities = @(
         @{ CapabilityName = 'Rsat.ServerManager.Tools';              CabStem = 'Microsoft-Windows-ServerManager-Tools-FoD-Package' }
