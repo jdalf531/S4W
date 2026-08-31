@@ -12,7 +12,8 @@
 
 > **Post-implementation amendment (2026-08-31):** after all 11 tasks landed,
 > a `BuildSourceMap` alias table was added to `RsatCapabilities.psd1`
-> (`26200` → `26100`) so Windows 11 25H2 installs from the 24H2 cabs. This
+> (`22631` → `22621`, `26200` → `26100`) so Windows 11 23H2 and 25H2 install
+> from their branch base (22H2 / 24H2) cabs. This
 > added `Get-RsatBuildSourceMap` to `Install-RSAT.ps1`, a third parameter
 > (`-BuildSourceMap`) on `Resolve-RsatSourceFolder` (exact `<build>` folder
 > still wins over an alias), and covering tests. See the spec's Amendment
@@ -32,7 +33,7 @@
   - `Rsat.BitLocker.Recovery.Tools` ↔ `Microsoft-Windows-BitLocker-Recovery-Tools-FoD-Package`
   - `OpenSSH.Client` ↔ `OpenSSH-Client-Package`
 - **Language-neutral cab filename pattern:** `<CabStem>~31bf3856ad364e35~amd64~~.cab`. Cab-name matching is **case-insensitive** (`FoD` vs `FOD`).
-- **Supported OS builds:** `22621` (Win11 22H2) and `26100` (Win11 24H2), plus `26200` (Win11 25H2) via an explicit `BuildSourceMap` alias to `26100`. An unrecognized build fails fast (installer exit `2`), never guesses or falls back to another build's source *except* through an explicit `BuildSourceMap` entry.
+- **Supported OS builds:** `22621` (Win11 22H2) and `26100` (Win11 24H2) from real ISOs, plus `22631` (23H2) → `22621` and `26200` (25H2) → `26100` via explicit `BuildSourceMap` aliases. An unrecognized build fails fast (installer exit `2`), never guesses or falls back to another build's source *except* through an explicit `BuildSourceMap` entry.
 - **Install order:** `Rsat.ServerManager.Tools`, then `Rsat.FileServices.Tools`, then `Rsat.ActiveDirectory.DS-LDS.Tools`, then the remaining 6 in any order — so cross-capability dependencies (`BitLocker→AD`, `AD→ServerManager`, `FileServices→ServerManager`, `FailoverCluster→FileServices`) resolve even if DISM's own resolution misbehaves against a source folder.
 - **`OpenSSH.Client` is pre-installed on build 26100** — the installer treats `State = Installed` as success, never re-installs.
 - **`Install-RSAT.ps1` exit codes:** `0` all installed/already present; `3010` installed + reboot required; `1` one or more failures (a capability the target OS does not offer counts as a failure); `2` no matching `<build>` source subfolder; `3` not elevated. Precedence when computing the code: not-elevated → `3`; else no-source-folder → `2`; else failures → `1`; else reboot → `3010`; else `0`.

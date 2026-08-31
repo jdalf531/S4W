@@ -33,8 +33,9 @@ Describe 'RsatCapabilities.psd1' {
         $names | Should -Contain 'Rsat.BitLocker.Recovery.Tools'
     }
 
-    It 'maps 25H2 (build 26200) to the 26100 source folder' {
+    It 'maps 23H2 (22631) and 25H2 (26200) to their branch base builds' {
         $script:Data.BuildSourceMap | Should -Not -BeNullOrEmpty
+        $script:Data.BuildSourceMap['22631'] | Should -Be '22621'
         $script:Data.BuildSourceMap['26200'] | Should -Be '26100'
     }
 

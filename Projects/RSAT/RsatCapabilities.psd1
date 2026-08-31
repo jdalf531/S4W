@@ -18,12 +18,14 @@
 
     # Maps an OS CurrentBuildNumber to the LanguagesAndOptionalFeatures
     # <build> subfolder whose cabs satisfy it, for builds that do not ship
-    # their own ISO. 25H2 (26200) is an enablement package on 24H2's (26100)
-    # servicing branch and the FoD cab manifests allow build >= 26100, so
-    # the 26100 cabs install cleanly on it. Install-RSAT.ps1 still prefers an
-    # exact <build> subfolder when one exists; a build that is neither
-    # present as a subfolder nor listed here fails fast (exit 2).
+    # their own ISO. 23H2 (22631) and 25H2 (26200) are enablement packages on
+    # the 22H2 (22621) and 24H2 (26100) servicing branches respectively, and
+    # the FoD cab manifests allow the branch's base build or later, so the
+    # base build's cabs install cleanly on them. Install-RSAT.ps1 still
+    # prefers an exact <build> subfolder when one exists; a build that is
+    # neither present as a subfolder nor listed here fails fast (exit 2).
     BuildSourceMap = @{
+        '22631' = '22621'
         '26200' = '26100'
     }
 }

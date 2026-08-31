@@ -12,12 +12,13 @@ Status: Approved for implementation
 > deployment contexts for no benefit).
 >
 > **Amendment (2026-08-31, later same day):** added a `BuildSourceMap` alias
-> table in `RsatCapabilities.psd1`. Windows 11 25H2 (build 26200) is an
-> enablement package on 24H2's (26100) servicing branch and the FoD cab
-> manifests declare `buildCompare="GE"` against the 26100 EditionPack, so the
-> 26100 cabs install on 26200. The installer now resolves 26200 to the 26100
-> source folder. Unmapped unknown builds still fail fast (exit 2) — the alias
-> table is explicit, not a "use whatever is newest" fallback.
+> table in `RsatCapabilities.psd1`. Windows 11 23H2 (build 22631) and 25H2
+> (build 26200) are enablement packages on the 22H2 (22621) and 24H2 (26100)
+> servicing branches, and the FoD cab manifests declare `buildCompare="GE"`
+> against the branch base EditionPack, so the base build's cabs install on
+> them. The installer now resolves `22631` → `22621` and `26200` → `26100`.
+> Unmapped unknown builds still fail fast (exit 2) — the alias table is
+> explicit, not a "use whatever is newest" fallback.
 
 ## Purpose
 
@@ -146,9 +147,9 @@ PowerShell data file with two keys:
   `CapabilityName` values.
 - `BuildSourceMap` — a hashtable of `<OS build>` → `<source-folder build>`
   aliases, for OS builds that have no ISO of their own but whose FoD cabs
-  are satisfied by another build's folder (currently `26200` → `26100`, for
-  Windows 11 25H2 on the 24H2 servicing branch). Only the installer reads
-  it.
+  are satisfied by another build's folder (`22631` → `22621` for Win11 23H2
+  on the 22H2 branch, `26200` → `26100` for Win11 25H2 on the 24H2 branch).
+  Only the installer reads it.
 
 Both scripts load it with `Import-PowerShellDataFile` from their own
 `$PSScriptRoot`. The builder copies this file into `<OutputPath>\`
@@ -259,8 +260,8 @@ tests never execute the script body.
 
 - `RsatCapabilities.psd1`: a test asserts it loads via
   `Import-PowerShellDataFile`, has exactly 9 entries with non-empty
-  `CapabilityName` / `CabStem`, maps `26200` → `26100`, and only aliases to
-  a build that a real ISO produces.
+  `CapabilityName` / `CabStem`, maps `22631` → `22621` and `26200` →
+  `26100`, and only aliases to a build that a real ISO produces.
 - `Build-RsatPackage.ps1`: build-number-from-filename parsing (valid /
   unparseable); "all 9 cabs present" verification given a fake file listing
   (complete / one missing / case-variant `FOD` token); cab selection
@@ -297,7 +298,6 @@ None blocking. The 9-capability table and the `BuildSourceMap` both live in
 one file, `RsatCapabilities.psd1`; adding/renaming a capability or aliasing
 a new OS build to an existing folder is a deliberate one-file edit. If a
 future Windows build ships a cab under a renamed stem, the builder's "all 9
-cabs present" check fails loudly rather than producing a short package. If
-a future 23H2-style enablement build (e.g. 22631 on the 22H2 branch) needs
-covering, add it to `BuildSourceMap` — it is not there yet because only
-25H2 was confirmed compatible.
+cabs present" check fails loudly rather than producing a short package. A
+future enablement build on either current branch is a one-line
+`BuildSourceMap` addition.
