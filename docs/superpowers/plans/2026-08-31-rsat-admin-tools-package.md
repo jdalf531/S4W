@@ -21,8 +21,9 @@
 > *except* via an explicit `BuildSourceMap` entry".
 >
 > **Post-implementation amendment 2 (2026-08-31):** a third LOF ISO
-> (`mul_..._version_26h1_..._dvd_....iso`, build **28000**, a new servicing
-> branch, filename carries no build number) was added to `media-archive/`.
+> (`mul_..._version_26h1_..._dvd_....iso`, Windows 11 26H1, build **28000**,
+> a new servicing branch, filename carries no build number) was added to
+> `media-archive/`.
 > Task 8's `Get-IsoBuildNumber` (filename parser) is **replaced** by
 > `Get-BuildFromPackageManifest` (pure: reads `10.0.<build>.<rev>` from a
 > manifest string) + `Get-CabPackageBuild` (expands `update.mum` from a cab
@@ -46,7 +47,7 @@
   - `Rsat.BitLocker.Recovery.Tools` ↔ `Microsoft-Windows-BitLocker-Recovery-Tools-FoD-Package`
   - `OpenSSH.Client` ↔ `OpenSSH-Client-Package`
 - **Language-neutral cab filename pattern:** `<CabStem>~31bf3856ad364e35~amd64~~.cab`. Cab-name matching is **case-insensitive** (`FoD` vs `FOD`).
-- **Supported OS builds:** `22621` (Win11 22H2), `26100` (Win11 24H2), and `28000` (new branch) from real ISOs, plus `22631` (23H2) → `22621` and `26200` (25H2) → `26100` via explicit `BuildSourceMap` aliases. An unrecognized build fails fast (installer exit `2`), never guesses or falls back to another build's source *except* through an explicit `BuildSourceMap` entry.
+- **Supported OS builds:** `22621` (Win11 22H2), `26100` (Win11 24H2), and `28000` (Win11 26H1) from real ISOs, plus `22631` (23H2) → `22621` and `26200` (25H2) → `26100` via explicit `BuildSourceMap` aliases. An unrecognized build fails fast (installer exit `2`), never guesses or falls back to another build's source *except* through an explicit `BuildSourceMap` entry.
 - **Install order:** `Rsat.ServerManager.Tools`, then `Rsat.FileServices.Tools`, then `Rsat.ActiveDirectory.DS-LDS.Tools`, then the remaining 6 in any order — so cross-capability dependencies (`BitLocker→AD`, `AD→ServerManager`, `FileServices→ServerManager`, `FailoverCluster→FileServices`) resolve even if DISM's own resolution misbehaves against a source folder.
 - **`OpenSSH.Client` is pre-installed on build 26100** — the installer treats `State = Installed` as success, never re-installs.
 - **`Install-RSAT.ps1` exit codes:** `0` all installed/already present; `3010` installed + reboot required; `1` one or more failures (a capability the target OS does not offer counts as a failure); `2` no matching `<build>` source subfolder; `3` not elevated. Precedence when computing the code: not-elevated → `3`; else no-source-folder → `2`; else failures → `1`; else reboot → `3010`; else `0`.

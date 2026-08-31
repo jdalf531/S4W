@@ -22,8 +22,9 @@ Status: Approved for implementation
 >
 > **Amendment (2026-08-31, third revision):** the builder no longer parses
 > the OS build from the ISO filename — a third LOF ISO
-> (`mul_..._version_26h1_..._dvd_....iso`, build 28000, a new servicing
-> branch) carries no build number in its name. The builder now reads the
+> (`mul_..._version_26h1_..._dvd_....iso`, Windows 11 26H1, build 28000, a
+> new servicing branch) carries no build number in its name. The builder
+> now reads the
 > build from a cab's own package manifest (`update.mum` — the
 > `10.0.<build>.<revision>` version DISM matches against), which is
 > authoritative and filename-independent. Build 28000 gets its own `28000\`
@@ -45,7 +46,7 @@ two ways:
 The environment has no reliable path to Microsoft Update for Features on
 Demand (FOD), so the source content has to come from local media: the
 Windows 11 "Languages and Optional Features" ISOs kept in `media-archive\`
-(currently 22H2 build 22621, 24H2 build 26100, and a build-28000 branch).
+(currently 22H2 / build 22621, 24H2 / build 26100, and 26H1 / build 28000).
 Each ISO is ~6–7 GB and contains FOD cabs for far more than what is needed
 (Notepad, Paint, printing, WSUS tools, 30+ per-language variants of
 everything, etc.), so it is not practical to hand the ISO itself to MECM.

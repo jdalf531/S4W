@@ -14,7 +14,7 @@ two deployment contexts:
 The environment has no reliable path to Microsoft Update for Features on
 Demand, so all source content comes from local media: the Windows 11
 "Languages and Optional Features" ISOs kept in `media-archive/` (currently
-22H2 / build 22621, 24H2 / build 26100, and a build-28000 branch). Each ISO
+22H2 / build 22621, 24H2 / build 26100, and 26H1 / build 28000). Each ISO
 is ~6–7 GB and carries FOD cabs for far more than what is needed; this
 project extracts only the 9 required cabs, one `<build>` folder per ISO.
 
@@ -142,7 +142,7 @@ readable summary only when run interactively outside a task sequence.
 | 22631 (Win11 23H2) | `\22621\` (alias — same servicing branch) |
 | 26100 (Win11 24H2) | `\26100\` |
 | 26200 (Win11 25H2) | `\26100\` (alias — same servicing branch) |
-| 28000 (new branch) | `\28000\` |
+| 28000 (Win11 26H1) | `\28000\` |
 | anything else | none → exit `2` |
 
 Aliases live in `BuildSourceMap` in `RsatCapabilities.psd1`. An exact
@@ -166,11 +166,11 @@ real DISM cmdlet.
 **Before handoff to helpdesk**, validate the real DISM path manually (no
 task in this repo runs `Add-WindowsCapability` for real automatically):
 
-1. On a real 22H2/23H2/24H2/25H2/26H2 machine — run `Install-RSAT.ps1`
+1. On a real 22H2/23H2/24H2/25H2/26H1 machine — run `Install-RSAT.ps1`
    elevated, confirm exit `0`/`3010` and that the tools + `ssh.exe` appear.
-   For the 28000 branch, confirm the machine's `CurrentBuildNumber` is
-   actually `28000` — if it reports something else, add a one-line
-   `BuildSourceMap` alias to `28000`.
+   For the 26H1 / build-28000 branch, confirm the machine's
+   `CurrentBuildNumber` is actually `28000` — if it reports something else,
+   add a one-line `BuildSourceMap` alias to `28000`.
 2. Wire `RSAT-Install\` into an MECM Package + a test OSD task sequence step
    in WinPE, confirm the offline path works. This needs the ConfigMgr boot
    image to include the storage/scripting WinPE optional components
