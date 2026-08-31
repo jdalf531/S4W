@@ -8,7 +8,7 @@
 
 **Tech Stack:** Windows PowerShell 5.1, Pester v5 (5.7.1 installed), DISM PowerShell module (`Get-WindowsCapability` / `Add-WindowsCapability`), `Mount-DiskImage` / `Dismount-DiskImage`, `Import-PowerShellDataFile`.
 
-**Spec:** `Projects/RSAT/docs/superpowers/specs/2026-08-18-rsat-install-package-design.md`
+**Spec:** `docs/superpowers/specs/2026-08-18-rsat-install-package-design.md`
 
 > **Post-implementation amendment (2026-08-31):** after all 11 tasks landed,
 > a `BuildSourceMap` alias table was added to `RsatCapabilities.psd1`

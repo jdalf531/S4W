@@ -19,7 +19,6 @@ self-contained with its own README.
 ```
 S4W/
 ├── Projects/   – each tool/service, self-contained with its own README
-│               (RSAT keeps its own docs/ under Projects/RSAT/)
 ├── docs/       – design specs and implementation plans, one pair per feature
 └── README.md   – this file
 ```
