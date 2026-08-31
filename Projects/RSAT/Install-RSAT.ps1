@@ -132,3 +132,40 @@ function Get-ExitCodeForResult {
     if ($RebootRequired)         { return 3010 }
     return 0
 }
+
+function Write-Log {
+    param(
+        [Parameter(Mandatory)][string]$Message,
+        [string]$LogFile = $script:LogFile
+    )
+
+    $timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+    $line = "$timestamp - $Message"
+
+    if (-not $script:QuietMode) {
+        Write-Host $line
+    }
+
+    if ($LogFile) {
+        Add-Content -LiteralPath $LogFile -Value $line
+    }
+}
+
+function Test-IsAdministrator {
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $principal = New-Object Security.Principal.WindowsPrincipal($identity)
+    return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+function Get-TsEnvironmentObject {
+    try {
+        return New-Object -ComObject Microsoft.SMS.TSEnvironment -ErrorAction Stop
+    }
+    catch {
+        return $null
+    }
+}
+
+function Get-OSBuildNumberOnline {
+    return [int](Get-ItemPropertyValue -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' -Name 'CurrentBuildNumber')
+}

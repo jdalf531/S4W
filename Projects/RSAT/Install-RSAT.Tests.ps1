@@ -152,3 +152,43 @@ Describe 'Get-ExitCodeForResult' {
         Get-ExitCodeForResult -IsElevated $true -SourceFolderFound $true -FailedCount 0 -RebootRequired $false | Should -Be 0
     }
 }
+
+Describe 'Write-Log' {
+    It 'appends a timestamped line to the given log file' {
+        $tempLog = Join-Path $TestDrive 'test.log'
+        Write-Log -Message 'hello world' -LogFile $tempLog
+        Get-Content -LiteralPath $tempLog | Should -Match '^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} - hello world$'
+    }
+
+    It 'is silent on the host when QuietMode is set' {
+        $tempLog = Join-Path $TestDrive 'quiet.log'
+        $script:QuietMode = $true
+        try {
+            Write-Log -Message 'quiet line' -LogFile $tempLog 6>&1 | Should -BeNullOrEmpty
+        }
+        finally {
+            $script:QuietMode = $false
+        }
+        Get-Content -LiteralPath $tempLog | Should -Match 'quiet line$'
+    }
+}
+
+Describe 'Test-IsAdministrator' {
+    It 'returns a boolean' {
+        Test-IsAdministrator | Should -BeOfType [bool]
+    }
+}
+
+Describe 'Get-TsEnvironmentObject' {
+    It 'returns null outside of a task sequence' {
+        Get-TsEnvironmentObject | Should -BeNullOrEmpty
+    }
+}
+
+Describe 'Get-OSBuildNumberOnline' {
+    It 'returns a positive integer build number for the running OS' {
+        $result = Get-OSBuildNumberOnline
+        $result | Should -BeOfType [int]
+        $result | Should -BeGreaterThan 0
+    }
+}
