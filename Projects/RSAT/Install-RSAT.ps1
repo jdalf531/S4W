@@ -53,3 +53,48 @@ function Resolve-RsatSourceFolder {
 
     return $null
 }
+
+function Select-CapabilitiesToInstall {
+    param(
+        [Parameter(Mandatory)][object[]]$TargetCapability,
+        [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$AvailableCapability
+    )
+
+    $results = foreach ($target in $TargetCapability) {
+        $match = $AvailableCapability |
+            Where-Object { (($_.Name -split '~', 2)[0]) -ieq $target.CapabilityName } |
+            Select-Object -First 1
+
+        if (-not $match) {
+            [PSCustomObject]@{ CapabilityName = $target.CapabilityName; FullName = $null; Action = 'NotOffered' }
+        }
+        elseif ($match.State -eq 'Installed') {
+            [PSCustomObject]@{ CapabilityName = $target.CapabilityName; FullName = $match.Name; Action = 'AlreadyInstalled' }
+        }
+        else {
+            [PSCustomObject]@{ CapabilityName = $target.CapabilityName; FullName = $match.Name; Action = 'Install' }
+        }
+    }
+
+    return @($results)
+}
+
+function Get-CapabilityInstallOrder {
+    param(
+        [Parameter(Mandatory)][object[]]$Capability
+    )
+
+    $priority = @(
+        'Rsat.ServerManager.Tools',
+        'Rsat.FileServices.Tools',
+        'Rsat.ActiveDirectory.DS-LDS.Tools'
+    )
+
+    $decorated = for ($i = 0; $i -lt $Capability.Count; $i++) {
+        $rank = $priority.IndexOf([string]$Capability[$i].CapabilityName)
+        if ($rank -lt 0) { $rank = [int]::MaxValue }
+        [PSCustomObject]@{ Item = $Capability[$i]; Rank = $rank; Original = $i }
+    }
+
+    return @($decorated | Sort-Object Rank, Original | ForEach-Object { $_.Item })
+}

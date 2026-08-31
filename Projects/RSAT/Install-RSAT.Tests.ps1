@@ -36,3 +36,65 @@ Describe 'Resolve-RsatSourceFolder' {
         Resolve-RsatSourceFolder -PackageRoot $script:PackageRoot -BuildNumber 99999 | Should -BeNullOrEmpty
     }
 }
+
+Describe 'Select-CapabilitiesToInstall' {
+    BeforeAll {
+        $script:Targets = @(
+            @{ CapabilityName = 'Rsat.Dns.Tools' }
+            @{ CapabilityName = 'Rsat.DHCP.Tools' }
+            @{ CapabilityName = 'OpenSSH.Client' }
+            @{ CapabilityName = 'Rsat.ServerManager.Tools' }
+        )
+    }
+
+    It 'classifies each target as Install / AlreadyInstalled / NotOffered' {
+        $available = @(
+            [PSCustomObject]@{ Name = 'Rsat.Dns.Tools~~~~0.0.1.0';    State = 'NotPresent' }
+            [PSCustomObject]@{ Name = 'Rsat.DHCP.Tools~~~~0.0.1.0';   State = 'Installed' }
+            [PSCustomObject]@{ Name = 'OpenSSH.Client~~~~0.0.1.0';    State = 'NotPresent' }
+        )
+
+        $result = Select-CapabilitiesToInstall -TargetCapability $script:Targets -AvailableCapability $available
+
+        $result.Count | Should -Be 4
+        ($result | Where-Object CapabilityName -eq 'Rsat.Dns.Tools').Action           | Should -Be 'Install'
+        ($result | Where-Object CapabilityName -eq 'Rsat.Dns.Tools').FullName         | Should -Be 'Rsat.Dns.Tools~~~~0.0.1.0'
+        ($result | Where-Object CapabilityName -eq 'Rsat.DHCP.Tools').Action          | Should -Be 'AlreadyInstalled'
+        ($result | Where-Object CapabilityName -eq 'OpenSSH.Client').Action           | Should -Be 'Install'
+        ($result | Where-Object CapabilityName -eq 'Rsat.ServerManager.Tools').Action | Should -Be 'NotOffered'
+        ($result | Where-Object CapabilityName -eq 'Rsat.ServerManager.Tools').FullName | Should -BeNullOrEmpty
+    }
+
+    It 'matches capability names case-insensitively' {
+        $available = @([PSCustomObject]@{ Name = 'rsat.dns.TOOLS~~~~0.0.1.0'; State = 'NotPresent' })
+        $result = Select-CapabilitiesToInstall -TargetCapability @(@{ CapabilityName = 'Rsat.Dns.Tools' }) -AvailableCapability $available
+        $result[0].Action | Should -Be 'Install'
+    }
+
+    It 'treats an empty available list as everything NotOffered' {
+        $result = Select-CapabilitiesToInstall -TargetCapability $script:Targets -AvailableCapability @()
+        @($result | Where-Object Action -ne 'NotOffered').Count | Should -Be 0
+    }
+}
+
+Describe 'Get-CapabilityInstallOrder' {
+    It 'moves the three dependency roots to the front in the required order, keeping the rest stable' {
+        $capabilityInput = @(
+            [PSCustomObject]@{ CapabilityName = 'Rsat.Dns.Tools' }
+            [PSCustomObject]@{ CapabilityName = 'Rsat.ActiveDirectory.DS-LDS.Tools' }
+            [PSCustomObject]@{ CapabilityName = 'OpenSSH.Client' }
+            [PSCustomObject]@{ CapabilityName = 'Rsat.ServerManager.Tools' }
+            [PSCustomObject]@{ CapabilityName = 'Rsat.FileServices.Tools' }
+            [PSCustomObject]@{ CapabilityName = 'Rsat.DHCP.Tools' }
+        )
+
+        $ordered = @(Get-CapabilityInstallOrder -Capability $capabilityInput | ForEach-Object CapabilityName)
+
+        $ordered[0] | Should -Be 'Rsat.ServerManager.Tools'
+        $ordered[1] | Should -Be 'Rsat.FileServices.Tools'
+        $ordered[2] | Should -Be 'Rsat.ActiveDirectory.DS-LDS.Tools'
+        $ordered[3] | Should -Be 'Rsat.Dns.Tools'
+        $ordered[4] | Should -Be 'OpenSSH.Client'
+        $ordered[5] | Should -Be 'Rsat.DHCP.Tools'
+    }
+}
