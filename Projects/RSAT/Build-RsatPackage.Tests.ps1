@@ -38,36 +38,34 @@ Describe 'Get-BuildFromPackageManifest' {
     }
 }
 
-Describe 'Get-RsatCabFileName' {
-    It 'builds the neutral amd64 FeaturePackage cab filename by default' {
-        Get-RsatCabFileName -CabStem 'Microsoft-Windows-DNS-Tools-FoD-Package' |
+Describe 'Get-NeutralFeatureCabName' {
+    It 'builds the neutral amd64 FeaturePackage cab filename for a stem' {
+        Get-NeutralFeatureCabName -CabStem 'Microsoft-Windows-DNS-Tools-FoD-Package' |
             Should -Be 'Microsoft-Windows-DNS-Tools-FoD-Package~31bf3856ad364e35~amd64~~.cab'
-    }
-
-    It 'builds the wow64 SatellitePackage cab filename when asked' {
-        Get-RsatCabFileName -CabStem 'Microsoft-Windows-DNS-Tools-FoD-Package' -Architecture 'wow64' |
-            Should -Be 'Microsoft-Windows-DNS-Tools-FoD-Package~31bf3856ad364e35~wow64~~.cab'
     }
 }
 
 Describe 'Find-MissingFeatureCab' {
-    It 'returns an empty array when every amd64 FeaturePackage cab is present' {
+    It 'returns an empty array when every neutral FeaturePackage cab is present' {
         $stems = @('Microsoft-Windows-DNS-Tools-FoD-Package', 'OpenSSH-Client-Package')
-        $available = $stems | ForEach-Object { Get-RsatCabFileName -CabStem $_ }
+        $available = $stems | ForEach-Object { Get-NeutralFeatureCabName -CabStem $_ }
         (Find-MissingFeatureCab -AvailableFileName $available -CabStem $stems).Count | Should -Be 0
     }
 
-    It 'names the amd64 cab that is missing' {
+    It 'names the neutral cab that is missing' {
         $stems = @('Microsoft-Windows-DNS-Tools-FoD-Package', 'OpenSSH-Client-Package')
-        $available = @((Get-RsatCabFileName -CabStem 'Microsoft-Windows-DNS-Tools-FoD-Package'))
+        $available = @((Get-NeutralFeatureCabName -CabStem 'Microsoft-Windows-DNS-Tools-FoD-Package'))
         $missing = Find-MissingFeatureCab -AvailableFileName $available -CabStem $stems
         $missing | Should -Be @('OpenSSH-Client-Package~31bf3856ad364e35~amd64~~.cab')
     }
 
-    It 'does not require a wow64 satellite cab' {
+    It 'ignores language and wow64 cabs - only the neutral amd64 one counts' {
         $stems = @('Microsoft-Windows-DNS-Tools-FoD-Package')
-        $available = @((Get-RsatCabFileName -CabStem $stems[0]))   # amd64 only, no wow64
-        (Find-MissingFeatureCab -AvailableFileName $available -CabStem $stems).Count | Should -Be 0
+        $available = @(
+            'Microsoft-Windows-DNS-Tools-FoD-Package~31bf3856ad364e35~amd64~en-US~.cab'
+            'Microsoft-Windows-DNS-Tools-FoD-Package~31bf3856ad364e35~wow64~~.cab'
+        )   # no neutral amd64 -> still reported missing
+        (Find-MissingFeatureCab -AvailableFileName $available -CabStem $stems).Count | Should -Be 1
     }
 
     It 'matches case-insensitively (FoD vs FOD)' {
@@ -78,21 +76,24 @@ Describe 'Find-MissingFeatureCab' {
 }
 
 Describe 'Get-RsatCabToCopy' {
-    It 'returns the amd64 cab for every stem and the wow64 cab where present' {
+    It 'returns every cab for each stem - all arches and languages' {
         $src = Join-Path $TestDrive 'lof-ok'
         New-Item -ItemType Directory -Path $src -Force | Out-Null
-        New-Item -ItemType File -Path (Join-Path $src 'Some-Unrelated-Feature~31bf3856ad364e35~amd64~~.cab') -Force | Out-Null
-
-        # DNS has both arches, OpenSSH amd64 only
-        New-Item -ItemType File -Path (Join-Path $src (Get-RsatCabFileName -CabStem 'Microsoft-Windows-DNS-Tools-FoD-Package')) -Force | Out-Null
-        New-Item -ItemType File -Path (Join-Path $src (Get-RsatCabFileName -CabStem 'Microsoft-Windows-DNS-Tools-FoD-Package' -Architecture 'wow64')) -Force | Out-Null
-        New-Item -ItemType File -Path (Join-Path $src (Get-RsatCabFileName -CabStem 'OpenSSH-Client-Package')) -Force | Out-Null
+        $dnsCabs = @(
+            'Microsoft-Windows-DNS-Tools-FoD-Package~31bf3856ad364e35~amd64~~.cab'
+            'Microsoft-Windows-DNS-Tools-FoD-Package~31bf3856ad364e35~amd64~en-US~.cab'
+            'Microsoft-Windows-DNS-Tools-FoD-Package~31bf3856ad364e35~amd64~de-DE~.cab'
+            'Microsoft-Windows-DNS-Tools-FoD-Package~31bf3856ad364e35~wow64~~.cab'
+            'Microsoft-Windows-DNS-Tools-FoD-Package~31bf3856ad364e35~wow64~en-US~.cab'
+        )
+        foreach ($n in $dnsCabs + @('OpenSSH-Client-Package~31bf3856ad364e35~amd64~~.cab', 'Some-Unrelated-Feature~31bf3856ad364e35~amd64~~.cab')) {
+            New-Item -ItemType File -Path (Join-Path $src $n) -Force | Out-Null
+        }
 
         $names = @(Get-RsatCabToCopy -SourceFolder $src -CabStem @('Microsoft-Windows-DNS-Tools-FoD-Package', 'OpenSSH-Client-Package') | Split-Path -Leaf)
 
-        $names.Count | Should -Be 3
-        $names | Should -Contain 'Microsoft-Windows-DNS-Tools-FoD-Package~31bf3856ad364e35~amd64~~.cab'
-        $names | Should -Contain 'Microsoft-Windows-DNS-Tools-FoD-Package~31bf3856ad364e35~wow64~~.cab'
+        $names.Count | Should -Be 6                       # 5 DNS + 1 OpenSSH
+        foreach ($n in $dnsCabs) { $names | Should -Contain $n }
         $names | Should -Contain 'OpenSSH-Client-Package~31bf3856ad364e35~amd64~~.cab'
         $names | Should -Not -Contain 'Some-Unrelated-Feature~31bf3856ad364e35~amd64~~.cab'
     }
@@ -106,10 +107,10 @@ Describe 'Get-RsatCabToCopy' {
         $leaf | Should -BeExactly 'Microsoft-Windows-FailoverCluster-Management-Tools-FOD-Package~31bf3856ad364e35~amd64~~.cab'
     }
 
-    It 'throws and names the missing FeaturePackage cab when one is absent' {
+    It 'throws when a stem has no cabs at all' {
         $src = Join-Path $TestDrive 'lof-missing'
         New-Item -ItemType Directory -Path $src -Force | Out-Null
-        New-Item -ItemType File -Path (Join-Path $src (Get-RsatCabFileName -CabStem 'Microsoft-Windows-DNS-Tools-FoD-Package')) -Force | Out-Null
+        New-Item -ItemType File -Path (Join-Path $src 'Microsoft-Windows-DNS-Tools-FoD-Package~31bf3856ad364e35~amd64~~.cab') -Force | Out-Null
 
         { Get-RsatCabToCopy -SourceFolder $src -CabStem @('Microsoft-Windows-DNS-Tools-FoD-Package', 'OpenSSH-Client-Package') } |
             Should -Throw -ExpectedMessage '*OpenSSH-Client-Package*'

@@ -32,26 +32,28 @@
 > "Get-CabPackageBuild / build from the cab package manifest".
 >
 > **Post-implementation amendment 3 (2026-09-01):** first real MECM
-> deployment (25H2 / build 26200) failed every capability with DISM
-> `0x800f081f`. **Root cause was a builder bug, not the alias** — the
-> builder copied only the `~amd64~~` FeaturePackage cab per capability and
-> **omitted the `LanguagesAndOptionalFeatures\metadata\` folder entirely**
-> (the FoD Component Database DISM uses to resolve a capability name → its
-> packages), and the CompDB shows 7 of the 9 capabilities also need a
-> `~wow64~~` SatellitePackage cab. Fix in `Build-RsatPackage.ps1`:
-> `Get-RsatCabFileName` gains an `-Architecture` param; `Find-MissingCabFileName`
-> → `Find-MissingFeatureCab` (checks only the required `~amd64~~` cab);
-> `Get-RsatCabToCopy` now returns `~amd64~~` + `~wow64~~`-where-present with
-> ISO casing preserved; `Invoke-Main` copies the `metadata\` folder into
-> each `<build>\` and hard-fails if the ISO lacks it. The `<build>\` folder
-> now mirrors the ISO's LOF layout (~16 cabs + `metadata\`, ~36 MB). The
-> amendment-1 `BuildSourceMap` aliases stand (Microsoft-documented; the
-> CompDB has no version lock). Wherever tasks below say "copy the 9 cabs" or
-> "all 9 cabs present", read the above.
+> deployment (25H2 / build 26200) failed. Diagnosed against real DISM/CBS
+> logs — it was a builder bug (not the alias), fixed in two steps:
+>  1. `0x800f081f` — builder never copied `LanguagesAndOptionalFeatures\metadata\`
+>     (the FoD CompDB). Now it does, into every `<build>\`, hard-failing if
+>     the ISO lacks it.
+>  2. `0x800f0955` (`CBS_E_INVALID_PACKAGE_REQUEST_ON_MULTILINGUAL_FOD`) —
+>     the RSAT FoD is multilingual; a neutral-only source is rejected.
+>     `Get-RsatCabToCopy` now returns **every cab for each of the 9 stems**
+>     (all arches + all languages, ~660 cabs); `Get-RsatCabFileName` →
+>     `Get-NeutralFeatureCabName` (neutral amd64 only, used for the presence
+>     check + build probe); `Find-MissingCabFileName` → `Find-MissingFeatureCab`;
+>     manifest now records `CabCount` / `ApproxSizeMB` instead of the cab
+>     list. `<build>\` folder is ~286 MB (~860 MB for 3 builds).
+> Verified on real 25H2: a single capability installs from a folder holding
+> just its stem's full cab set + `metadata\`. The amendment-1 `BuildSourceMap`
+> aliases stand (a full-ISO `Add-WindowsCapability` succeeded on 26200).
+> Wherever tasks below say "copy the 9 cabs" / "language-neutral cabs only",
+> read the above.
 
 ## Global Constraints
 
-- **Target capabilities — exactly these 9, both builds, language-neutral cabs only** (capability name ↔ cab stem):
+- **Target capabilities — exactly these 9; ship every cab for each stem (all arches + all languages), see amendment 3** (capability name ↔ cab stem):
   - `Rsat.ServerManager.Tools` ↔ `Microsoft-Windows-ServerManager-Tools-FoD-Package`
   - `Rsat.FileServices.Tools` ↔ `Microsoft-Windows-FileServices-Tools-FoD-Package`
   - `Rsat.ActiveDirectory.DS-LDS.Tools` ↔ `Microsoft-Windows-ActiveDirectory-DS-LDS-Tools-FoD-Package`
@@ -61,8 +63,8 @@
   - `Rsat.FailoverCluster.Management.Tools` ↔ `Microsoft-Windows-FailoverCluster-Management-Tools-FOD-Package` (note: uppercase `FOD`)
   - `Rsat.BitLocker.Recovery.Tools` ↔ `Microsoft-Windows-BitLocker-Recovery-Tools-FoD-Package`
   - `OpenSSH.Client` ↔ `OpenSSH-Client-Package`
-- **Language-neutral cab filename pattern:** `<CabStem>~31bf3856ad364e35~amd64~~.cab`. Cab-name matching is **case-insensitive** (`FoD` vs `FOD`).
-- **Supported OS builds:** one `<build>\` folder per LOF ISO in `media-archive\`. Currently `22621` (Win11 22H2), `26100` (Win11 24H2), `28000` (Win11 26H1) from real ISOs; `BuildSourceMap` aliases `22631` (23H2) → `22621` and `26200` (25H2) → `26100` because Microsoft ships one LOF ISO per release pair. An exact `<build>\` folder wins over an alias; a build with neither fails fast (installer exit `2`) with a log line naming the LOF ISO to obtain. Each `<build>\` folder holds ~16 cabs (`~amd64~~` + `~wow64~~`) plus the ISO's `metadata\` folder — see amendment 3.
+- **Cab selection:** ship every cab whose name starts `<CabStem>~31bf3856ad364e35~` for each stem — all arches (`amd64`, `wow64`), all languages (`~~`, `~en-US~`, …). Matching is **case-insensitive** (`FoD` vs `FOD`). The neutral `~amd64~~` cab of each stem must exist (presence check + build probe).
+- **Supported OS builds:** one `<build>\` folder per LOF ISO in `media-archive\`. Currently `22621` (Win11 22H2), `26100` (Win11 24H2), `28000` (Win11 26H1) from real ISOs; `BuildSourceMap` aliases `22631` (23H2) → `22621` and `26200` (25H2) → `26100` because Microsoft ships one LOF ISO per release pair. An exact `<build>\` folder wins over an alias; a build with neither fails fast (installer exit `2`). Each `<build>\` folder holds ~660 cabs plus the ISO's `metadata\` folder, ~286 MB — see amendment 3.
 - **Install order:** `Rsat.ServerManager.Tools`, then `Rsat.FileServices.Tools`, then `Rsat.ActiveDirectory.DS-LDS.Tools`, then the remaining 6 in any order — so cross-capability dependencies (`BitLocker→AD`, `AD→ServerManager`, `FileServices→ServerManager`, `FailoverCluster→FileServices`) resolve even if DISM's own resolution misbehaves against a source folder.
 - **`OpenSSH.Client` is pre-installed on build 26100** — the installer treats `State = Installed` as success, never re-installs.
 - **`Install-RSAT.ps1` exit codes:** `0` all installed/already present; `3010` installed + reboot required; `1` one or more failures (a capability the target OS does not offer counts as a failure); `2` no matching `<build>` source subfolder; `3` not elevated. Precedence when computing the code: not-elevated → `3`; else no-source-folder → `2`; else failures → `1`; else reboot → `3010`; else `0`.

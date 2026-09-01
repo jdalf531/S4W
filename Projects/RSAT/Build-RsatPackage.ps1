@@ -5,19 +5,21 @@
     into a self-contained folder for MECM deployment.
 .DESCRIPTION
     Mounts each ISO under .\media-archive\ read-only, then for each of the 9
-    capabilities in RsatCapabilities.psd1 copies its language-neutral cabs -
-    the required ~amd64~~ FeaturePackage cab AND, where the ISO carries one,
-    the ~wow64~~ SatellitePackage cab (7 of the 9 have one; DISM needs both
-    or the install fails 0x800f081f). It also copies the ISO's
-    LanguagesAndOptionalFeatures\metadata\ folder verbatim - the Component
-    Database DISM uses to resolve a capability name to its packages. The OS
-    build is read from a cab's own package manifest (the 10.0.<build>.<rev>
-    version), so the ISO filename format does not matter. Output goes to
-    <OutputPath>\LanguagesAndOptionalFeatures\<build>\ (mirroring the ISO
-    layout); Install-RSAT.ps1 and RsatCapabilities.psd1 are copied into
-    <OutputPath>\ and a manifest.json is written. Run manually on an admin
-    workstation whenever an ISO is added or refreshed; not part of the
-    deployed package.
+    capabilities in RsatCapabilities.psd1 copies EVERY cab for its package
+    stem - all architectures (amd64, wow64) and all languages (neutral +
+    per-locale). The RSAT Features on Demand are multilingual: installing a
+    capability offline (-LimitAccess) on a patched machine needs the cab
+    matching the target's display language present, or DISM fails 0x800f0955.
+    It also copies the ISO's LanguagesAndOptionalFeatures\metadata\ folder
+    verbatim - the Component Database DISM uses to resolve a capability name
+    to its packages (without it: 0x800f081f). The OS build is read from a
+    cab's own package manifest (the 10.0.<build>.<rev> version), so the ISO
+    filename format does not matter. Output goes to
+    <OutputPath>\LanguagesAndOptionalFeatures\<build>\ (~286 MB per build,
+    mirroring the ISO layout for just these 9 stems); Install-RSAT.ps1 and
+    RsatCapabilities.psd1 are copied into <OutputPath>\ and a manifest.json
+    is written. Run manually on an admin workstation whenever an ISO is added
+    or refreshed; not part of the deployed package.
 .NOTES
     Modified: 2026-09-01
 #>
@@ -78,19 +80,21 @@ function Get-CabPackageBuild {
     }
 }
 
-function Get-RsatCabFileName {
+function Get-NeutralFeatureCabName {
+    # The language-neutral amd64 FeaturePackage cab for a stem - the one
+    # constant across every capability, used for the presence check and to
+    # read the OS build.
     param(
-        [Parameter(Mandatory)][string]$CabStem,
-        [ValidateSet('amd64', 'wow64')][string]$Architecture = 'amd64'
+        [Parameter(Mandatory)][string]$CabStem
     )
 
-    return "$CabStem~31bf3856ad364e35~$Architecture~~.cab"
+    return "$CabStem~31bf3856ad364e35~amd64~~.cab"
 }
 
 function Find-MissingFeatureCab {
-    # The ~amd64~~ FeaturePackage cab is required for every capability. The
-    # ~wow64~~ SatellitePackage cab is optional - only 7 of the 9 have one -
-    # so it is not checked here.
+    # Every capability must have its language-neutral amd64 FeaturePackage
+    # cab. (Language and wow64 cabs are handled by Get-RsatCabToCopy, which
+    # takes everything for the stem.)
     param(
         [Parameter(Mandatory)][AllowEmptyCollection()][string[]]$AvailableFileName,
         [Parameter(Mandatory)][string[]]$CabStem
@@ -99,7 +103,7 @@ function Find-MissingFeatureCab {
     $availableLower = @($AvailableFileName | ForEach-Object { $_.ToLowerInvariant() })
 
     $missing = foreach ($stem in $CabStem) {
-        $expected = Get-RsatCabFileName -CabStem $stem -Architecture 'amd64'
+        $expected = Get-NeutralFeatureCabName -CabStem $stem
         if ($availableLower -notcontains $expected.ToLowerInvariant()) {
             $expected
         }
@@ -109,32 +113,26 @@ function Find-MissingFeatureCab {
 }
 
 function Get-RsatCabToCopy {
-    # Per capability: the required ~amd64~~ FeaturePackage cab, plus the
-    # ~wow64~~ SatellitePackage cab when the ISO carries one. Returns full
-    # source paths, preserving the ISO's actual filename casing (the
-    # FailoverCluster cab uses "FOD" where the others use "FoD").
+    # Every cab for each capability's stem - all architectures (amd64, wow64)
+    # and all languages (neutral + per-locale). The RSAT FoD packages are
+    # multilingual: installing a capability with -LimitAccess needs the cab
+    # matching the target's display language present, so all of them ship
+    # (~286 MB for the 9 stems) rather than guessing the target locale.
+    # Anything not matching one of the 9 stems is left behind.
     param(
         [Parameter(Mandatory)][string]$SourceFolder,
         [Parameter(Mandatory)][string[]]$CabStem
     )
 
-    $byLowerName = @{}
-    foreach ($item in Get-ChildItem -LiteralPath $SourceFolder -Filter '*.cab' -File) {
-        $byLowerName[$item.Name.ToLowerInvariant()] = $item.Name
-    }
-
-    $missing = Find-MissingFeatureCab -AvailableFileName @($byLowerName.Values) -CabStem $CabStem
-    if ($missing.Count -gt 0) {
-        throw "Source folder '$SourceFolder' is missing $($missing.Count) required FeaturePackage cab(s): $($missing -join ', ')"
-    }
+    $allCabs = @(Get-ChildItem -LiteralPath $SourceFolder -Filter '*.cab' -File)
 
     $result = foreach ($stem in $CabStem) {
-        foreach ($arch in 'amd64', 'wow64') {
-            $wantLower = (Get-RsatCabFileName -CabStem $stem -Architecture $arch).ToLowerInvariant()
-            if ($byLowerName.ContainsKey($wantLower)) {
-                Join-Path $SourceFolder $byLowerName[$wantLower]
-            }
+        $prefix = "$stem~31bf3856ad364e35~"
+        $forStem = @($allCabs | Where-Object { $_.Name.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase) })
+        if ($forStem.Count -eq 0) {
+            throw "Source folder '$SourceFolder' has no cabs for capability stem '$stem'."
         }
+        $forStem | ForEach-Object { $_.FullName }
     }
 
     return @($result)
@@ -183,9 +181,17 @@ function Invoke-Main {
                 throw "ISO '$iso' has no LanguagesAndOptionalFeatures\metadata folder - DISM needs its Component Database to resolve capability names."
             }
 
-            $cabPaths = Get-RsatCabToCopy -SourceFolder $lofSource -CabStem $cabStems
-            $buildNumber = Get-CabPackageBuild -CabPath $cabPaths[0]
+            $availableNames = @(Get-ChildItem -LiteralPath $lofSource -Filter '*.cab' -File | ForEach-Object Name)
+            $missingFeature = Find-MissingFeatureCab -AvailableFileName $availableNames -CabStem $cabStems
+            if ($missingFeature.Count -gt 0) {
+                throw "ISO '$iso' is missing $($missingFeature.Count) neutral FeaturePackage cab(s): $($missingFeature -join ', ')"
+            }
+
+            $buildProbeCab = Join-Path $lofSource (Get-NeutralFeatureCabName -CabStem $cabStems[0])
+            $buildNumber = Get-CabPackageBuild -CabPath $buildProbeCab
             Write-Host "  Detected OS build $buildNumber"
+
+            $cabPaths = Get-RsatCabToCopy -SourceFolder $lofSource -CabStem $cabStems
 
             $destFolder = Join-Path $featuresRoot $buildNumber
             if (Test-Path -LiteralPath $destFolder) {
@@ -193,19 +199,19 @@ function Invoke-Main {
             }
             New-Item -ItemType Directory -Path $destFolder -Force | Out-Null
 
-            $copiedNames = foreach ($cabPath in $cabPaths) {
+            foreach ($cabPath in $cabPaths) {
                 Copy-Item -LiteralPath $cabPath -Destination $destFolder -Force
-                Split-Path -Path $cabPath -Leaf
             }
-
             Copy-Item -LiteralPath $metadataSource -Destination $destFolder -Recurse -Force
 
-            Write-Host "  Copied $(@($copiedNames).Count) cabs + metadata\ to $destFolder"
+            $destSizeMb = [math]::Round((Get-ChildItem -LiteralPath $destFolder -Recurse -File | Measure-Object Length -Sum).Sum / 1MB, 1)
+            Write-Host "  Copied $($cabPaths.Count) cabs + metadata\ ($destSizeMb MB) to $destFolder"
 
             $manifestBuilds += [PSCustomObject]@{
                 Build            = $buildNumber
                 SourceIso        = (Split-Path -Path $iso -Leaf)
-                Cabs             = @($copiedNames)
+                CabCount         = $cabPaths.Count
+                ApproxSizeMB     = $destSizeMb
                 MetadataIncluded = $true
             }
         }

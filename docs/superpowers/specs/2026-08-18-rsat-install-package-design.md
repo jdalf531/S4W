@@ -27,20 +27,31 @@ Status: Approved for implementation
 > version), which is authoritative and filename-independent. Build 28000
 > gets its own `28000\` folder.
 >
-> **Amendment (2026-09-01):** first real MECM deployment (to a 25H2 / build
-> 26200 machine) failed every capability with DISM `0x800f081f`. Root cause:
-> the builder was copying only the `~amd64~~` FeaturePackage cab per
-> capability. The ISO's `LanguagesAndOptionalFeatures\metadata\` folder (the
-> FoD Component Database DISM uses to resolve a capability name to its
-> packages) was **not copied at all**, and the CompDB shows 7 of the 9
-> capabilities also need a `~wow64~~` SatellitePackage cab. Fix: the builder
-> now copies, per capability, the `~amd64~~` cab plus the `~wow64~~` cab when
-> the ISO carries one, **plus the whole `metadata\` folder**, into each
-> `<build>\` output (which now mirrors the ISO's LOF layout). This was a
-> builder bug affecting every build; 25H2 was simply the first real
-> deployment. The 2026-08-31 #2 aliases stand — Microsoft documents them and
-> the CompDB carries no version lock (`<parent buildCompare="GE"
-> version="0.0.0.0">`).
+> **Amendment (2026-09-01):** the "language-neutral cabs only" design was
+> wrong and is dropped. First real MECM deployment (25H2 / build 26200)
+> failed. Diagnosed against DISM/CBS logs on a real machine, in order:
+> 1. `0x800f081f` — the ISO's `LanguagesAndOptionalFeatures\metadata\`
+>    folder (the FoD Component Database DISM uses to resolve a capability
+>    name to its packages) was not copied. Builder now copies it verbatim
+>    into every `<build>\`.
+> 2. `0x800f0955` (`CBS_E_INVALID_PACKAGE_REQUEST_ON_MULTILINGUAL_FOD`) — the
+>    RSAT FoD packages are **multilingual**; installing a capability
+>    (`-LimitAccess`, patched OS) needs the cab matching the target's
+>    display language present, not just the neutral cab. Builder now copies
+>    **every cab for each of the 9 stems — all architectures (amd64, wow64)
+>    and all languages** (~286 MB/build, ~860 MB for 3 builds). Verified: a
+>    single capability installs cleanly on real 25H2 from a folder holding
+>    just its stem's full cab set + `metadata\`; the same folder minus the
+>    language cabs fails `0x800f0955`.
+>
+> A benign side effect: on a machine patched past the ISO's RTM build,
+> `-LimitAccess` blocks the LCU-level FoD top-up (`0x800f0912` in CBS.log),
+> so RSAT installs at RTM binary level and self-flags for "reservicing" at
+> the next cumulative update. Functionally fine for admin tools.
+>
+> The 2026-08-31 #2 `BuildSourceMap` aliases stand — Microsoft documents the
+> 26100 ISO as covering 24H2 **and** 25H2 (and 22621 as covering 22H2 and
+> 23H2), and a full-ISO `Add-WindowsCapability` confirmed it works on 25H2.
 
 ## Purpose
 
@@ -59,20 +70,22 @@ The environment has no reliable path to Microsoft Update for Features on
 Demand (FOD), so the source content has to come from local media: the
 Windows 11 "Languages and Optional Features" ISOs kept in `media-archive\`
 (currently 22H2 / build 22621, 24H2 / build 26100, and 26H1 / build 28000).
-Each ISO is ~6–7 GB and contains FOD cabs for far more than what is needed
-(Notepad, Paint, printing, WSUS tools, 30+ per-language variants of
-everything, etc.), so it is not practical to hand the ISO itself to MECM.
+Each ISO is ~6–7 GB and contains FOD cabs for far more than what is needed —
+~4000 cabs covering Notepad, Paint, printing, WSUS tools, every OS feature,
+in ~40 languages — so it is not practical to hand the ISO itself to MECM.
 
-This project produces a small folder (well under 100 MB) that drops
-straight into an MECM package: just the cabs for the 9 required
-capabilities, one `<build>` folder per ISO, plus one install script that
-adapts to whichever of the two contexts above it is running in.
+This project produces a folder (~286 MB per build, ~860 MB for the three)
+that drops straight into an MECM package: every cab for the 9 required
+capability stems (all architectures and languages) plus the FoD metadata,
+one `<build>` folder per ISO, plus one install script that adapts to
+whichever of the two contexts above it is running in.
 
 ## Scope
 
 **In scope:**
-- A builder script that extracts the 9 required language-neutral cabs from
-  each ISO in `media-archive\` into a deployable output folder.
+- A builder script that extracts, from each ISO in `media-archive\`, every
+  cab for the 9 required capability stems (all architectures and languages)
+  plus the FoD `metadata\` folder, into a deployable output folder.
 - An install script, shipped inside that output folder, that installs those
   9 capabilities whether it is running in WinPE against an offline image or
   in a full online OS.
@@ -85,8 +98,12 @@ adapts to whichever of the two contexts above it is running in.
 - Creating the actual MECM Package/Application/TS step objects in the
   ConfigMgr console — the output of this project is the package *source*
   folder; wiring it into MECM is a separate manual step.
-- Any capability not in the fixed list below.
-- Non-neutral (per-language) FOD resources.
+- Any capability not in the fixed list below (but for those 9, *all* their
+  cabs — every architecture and language — are in scope; the RSAT FoD is
+  multilingual and a neutral-only subset does not install).
+- Trimming the shipped languages to a subset (e.g. just the fleet's display
+  languages). Possible, but ~286 MB/build is acceptable and shipping them
+  all keeps the package locale-agnostic.
 - Hyper-V management tooling. Hyper-V management on Windows client is an
   in-box *optional feature* (`Microsoft-Hyper-V-Management-PowerShell` /
   `Microsoft-Hyper-V-Management-Clients`), not a capability, and no
@@ -96,12 +113,13 @@ adapts to whichever of the two contexts above it is running in.
 
 ## Target capabilities
 
-Exactly these 9, on both builds. Language-neutral cabs only. The
-capability-name ↔ cab-name pairing is a static data table defined once and
-shared by both scripts (the builder consumes the cab names, the installer
-consumes the capability names).
+Exactly these 9. For each, the builder ships **every** cab whose name starts
+`<CabStem>~31bf3856ad364e35~` — all architectures (amd64, wow64) and all
+languages (neutral + per-locale), ~660 cabs total. The capability-name ↔
+cab-stem pairing is a static data table shared by both scripts (the builder
+matches cab names by stem prefix, the installer uses the capability names).
 
-| Capability name (DISM)                  | Language-neutral cab (stem, `~31bf3856ad364e35~amd64~~.cab`) |
+| Capability name (DISM)                  | Cab stem (ship every `<stem>~31bf3856ad364e35~*.cab`) |
 | --------------------------------------- | ----------------------------------------------------------- |
 | `Rsat.ServerManager.Tools`              | `Microsoft-Windows-ServerManager-Tools-FoD-Package`         |
 | `Rsat.ActiveDirectory.DS-LDS.Tools`     | `Microsoft-Windows-ActiveDirectory-DS-LDS-Tools-FoD-Package`|
@@ -113,41 +131,49 @@ consumes the capability names).
 | `Rsat.BitLocker.Recovery.Tools`         | `Microsoft-Windows-BitLocker-Recovery-Tools-FoD-Package`    |
 | `OpenSSH.Client`                        | `OpenSSH-Client-Package`                                    |
 
-Notes established by direct inspection of both ISOs during design:
+Notes established by ISO inspection and by real `Add-WindowsCapability`
+runs on a 25H2 machine:
 
-- Each FOD cab is fully self-contained — it bundles its own internal
-  sub-packages (e.g. `ServerManager-Tools` carries 7 internal packages).
-  One cab per capability is all that is needed.
+- The neutral `~amd64~~` cab is the FeaturePackage; `~wow64~~` is a 32-bit
+  SatellitePackage (7 of the 9 have one); `~amd64~<lang>~` / `~wow64~<lang>~`
+  are the per-language satellites. **All are needed** — the RSAT FoD is a
+  multilingual package and DISM rejects a neutral-only source with
+  `0x800f0955`.
+- The `metadata\` folder (the FoD Component Database) must be shipped too or
+  DISM can't resolve the capability name (`0x800f081f`).
 - All cross-capability dependencies are satisfied within this 9-item set,
-  so nothing pulls in a 10th cab:
+  so nothing pulls in a 10th capability:
   - `Rsat.BitLocker.Recovery.Tools` → `Rsat.ActiveDirectory.DS-LDS.Tools`
   - `Rsat.ActiveDirectory.DS-LDS.Tools` → `Rsat.ServerManager.Tools`
   - `Rsat.FileServices.Tools` → `Rsat.ServerManager.Tools`
   - `Rsat.FailoverCluster.Management.Tools` → `Rsat.FileServices.Tools`
   - the rest declare no cross-capability dependency.
-- The cabs' only external reference is `<parent>` on
-  `Microsoft-Windows-EditionPack-Professional-Package` — i.e. "requires
-  Windows Pro or higher", already present on any RSAT-capable machine.
-- Language satellite cabs are marked optional
-  (`require type="language" value="*"`), so a neutral-only install succeeds
-  and tool UI follows the OS display language.
+- The cabs' `<parent>` reference is
+  `Microsoft-Windows-EditionPack-Professional-Package` with
+  `buildCompare="GE" version="0.0.0.0"` — i.e. "requires Windows Pro or
+  higher, any build". No version lock; the 26100 cabs are applicable to
+  25H2 (confirmed by a real full-ISO install on build 26200).
 - The `FailoverCluster-Management-Tools` cab uses an uppercase `FOD` token
-  in its filename where the others use `FoD`; filename matching must be
+  in its filename where the others use `FoD`; cab matching is
   case-insensitive.
-- `OpenSSH.Client` ships pre-installed on Windows 11 24H2 (build 26100),
-  so the installer must treat "already installed" as success, not re-install.
+- `OpenSSH.Client` ships pre-installed on Windows 11 24H2+, so the installer
+  treats "already installed" as success, not re-install.
 
 ## Background: how the ISOs are structured
 
-Each ISO has a `LanguagesAndOptionalFeatures\` folder containing FOD cabs
-named `<Feature>~31bf3856ad364e35~<arch>~<lang>~.cab`, one language-neutral
-cab per feature (`~~.cab`, no language token) plus ~35 per-language cabs.
-The 9 cabs above sit in this folder alongside hundreds of unrelated
-features. Windows resolves a capability name (e.g. `Rsat.Dns.Tools~~~~0.0.1.0`)
-to the right cab when `Add-WindowsCapability -Source` points at a folder
-containing the cab — DISM does the matching, and it resolves declared
-dependencies as long as the dependency's cab is present in the same source
-folder.
+Each ISO has a `LanguagesAndOptionalFeatures\` folder containing ~4000 FOD
+cabs named `<Feature>~31bf3856ad364e35~<arch>~<lang>~.cab` — per feature:
+a language-neutral `~~.cab`, ~40 per-language `~<lang>~.cab`, and for many
+features the same again in a `wow64` (32-bit) architecture flavour. Plus a
+`metadata\` subfolder of Component Database `.xml.cab` files. The 9 RSAT
+stems account for ~660 of those cabs.
+
+`Add-WindowsCapability -Name <FoD> -Source <folder> -LimitAccess` resolves
+the capability name via the CompDB in `<folder>\metadata\`, then installs
+the FeaturePackage, the wow64 satellite, and the language satellite matching
+the OS display language. Every one of those must be present in `<folder>`
+or the install fails (`0x800f081f` with no metadata, `0x800f0955` with a
+neutral-only / language-incomplete set).
 
 ## Architecture
 
@@ -165,8 +191,8 @@ Both scripts need the 9-row table above, so it lives once in a data file,
 PowerShell data file with two keys:
 
 - `Capabilities` — an array of hashtables, each with `CapabilityName` and
-  `CabStem`. The builder uses the `CabStem` values; the installer uses the
-  `CapabilityName` values.
+  `CabStem`. The builder matches cab filenames by `<CabStem>~…~` prefix; the
+  installer uses the `CapabilityName` values.
 - `BuildSourceMap` — a hashtable of `<OS build>` → `<source-folder build>`
   aliases. Microsoft ships one LOF ISO per release pair (the 22621 ISO
   covers 22H2 and 23H2; the 26100 ISO covers 24H2 and 25H2), so
@@ -192,32 +218,32 @@ Not part of the deployed package.
     the script.
 - **Per ISO:**
   1. Mount it (`Mount-DiskImage`).
-  2. Require `LanguagesAndOptionalFeatures\metadata\` and the `~amd64~~`
-     FeaturePackage cab for all 9 capabilities to be present; hard stop
-     naming any missing FeaturePackage cab — no partial output.
-  3. Read the OS build number from the first matched cab's package manifest
-     — expand `update.mum` and take the `10.0.<build>.<revision>` version
+  2. Require `LanguagesAndOptionalFeatures\metadata\` and the neutral
+     `~amd64~~` FeaturePackage cab for all 9 capabilities to be present;
+     hard stop naming any missing FeaturePackage cab — no partial output.
+  3. Read the OS build number from the neutral ServerManager cab's package
+     manifest — expand `update.mum` and take the `10.0.<build>.<revision>`
+     version
      (the value DISM matches a capability against). This is authoritative
      and independent of the ISO's filename, which need not carry a build
      number at all. No `10.0.*` version in the manifest is a hard stop.
   4. Into `<OutputPath>\LanguagesAndOptionalFeatures\<build>\`, preserving
-     the ISO's filename casing: (a) for each capability, its `~amd64~~`
-     FeaturePackage cab plus its `~wow64~~` SatellitePackage cab when the
-     ISO carries one (7 of the 9 do — DISM needs both), and (b) the entire
-     `metadata\` folder verbatim (the FoD Component Database DISM uses to
-     resolve capability names). The `<build>\` folder ends up mirroring the
-     ISO's LOF layout.
+     the ISO's filename casing: (a) every cab whose name starts
+     `<CabStem>~31bf3856ad364e35~` for each of the 9 stems (all
+     architectures, all languages — ~660 cabs), and (b) the entire
+     `metadata\` folder verbatim. A stem with zero matching cabs is a hard
+     stop.
   5. Dismount the ISO in a `finally` block.
 - **Idempotent:** re-running for a given build wipes and rebuilds only that
   build's subfolder; other builds in `OutputPath` are untouched.
 - After all ISOs: copies `Install-RSAT.ps1` and `RsatCapabilities.psd1`
   (both checked into this repo, not generated) into `<OutputPath>\`, and
   writes `<OutputPath>\manifest.json` recording, per build, the source ISO
-  filename, the copied cab filenames, `MetadataIncluded`, and a UTC
+  filename, `CabCount`, `ApproxSizeMB`, `MetadataIncluded`, and a UTC
   timestamp.
 - **Result:** `RSAT-Install\` = `Install-RSAT.ps1`, `RsatCapabilities.psd1`,
   `manifest.json`, and `LanguagesAndOptionalFeatures\<build>\` per ISO (each
-  ~16 cabs + a `metadata\` folder, ~36 MB). This whole folder is the MECM
+  ~660 cabs + a `metadata\` folder, ~286 MB). This whole folder is the MECM
   package source.
 
 ### 2. `Install-RSAT.ps1`
@@ -293,10 +319,11 @@ tests never execute the script body.
   `CapabilityName` / `CabStem`, and maps `22631 → 22621` and `26200 → 26100`.
 - `Build-RsatPackage.ps1`: build-number-from-package-manifest parsing
   (28000 / 22621 / 26100 style version strings, non-`10.0` versions ignored,
-  no version → throw); FeaturePackage-cab-present verification given a fake
-  file listing (complete / one missing / wow64 not required / case-variant
-  `FOD` token); cab selection returns the `~amd64~~` cab per capability plus
-  `~wow64~~` where present, casing preserved, unrelated cabs excluded.
+  no version → throw); neutral-FeaturePackage-present check (complete / one
+  missing / language+wow64 present but neutral absent still flagged /
+  case-variant `FOD`); cab selection returns *every* cab for each stem (all
+  arches and languages), casing preserved, unrelated cabs excluded, throws
+  when a stem has no cabs.
 - `Install-RSAT.ps1`: source-folder resolution (exact match / no match /
   alias followed / exact preferred over alias / alias target missing);
   `BuildSourceMap` loading (present / absent → empty map);

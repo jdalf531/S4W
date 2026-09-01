@@ -18,10 +18,10 @@ Those pairings are recorded as `BuildSourceMap` aliases in
 / 28000) needs its own ISO here.
 
 `Build-RsatPackage.ps1` (in the parent folder) reads every `*.iso` here by
-default, mounts each read-only, and for each of the 9 capabilities in
-`RsatCapabilities.psd1` copies the `~amd64~~` cab, its `~wow64~~` satellite
-where present, and the ISO's `LanguagesAndOptionalFeatures\metadata\`
-folder. Each ISO's build number is read from the cab package manifests
-(`10.0.<build>.<rev>`) — **the ISO filename does not need to contain the
-build number**. The ISOs are git-ignored (`*.iso`) due to size
-(~6–7 GB each).
+default, mounts each read-only, and for each of the 9 capability stems in
+`RsatCapabilities.psd1` copies **every** matching cab (all architectures and
+languages, ~660 total) plus the ISO's `LanguagesAndOptionalFeatures\metadata\`
+folder — ~286 MB per build. Each ISO's build number is read from the cab
+package manifests (`10.0.<build>.<rev>`) — **the ISO filename does not need
+to contain the build number**. The ISOs are git-ignored (`*.iso`) due to
+size (~6–7 GB each).
