@@ -33,16 +33,15 @@ Describe 'RsatCapabilities.psd1' {
         $names | Should -Contain 'Rsat.BitLocker.Recovery.Tools'
     }
 
-    It 'maps 23H2 (22631) and 25H2 (26200) to their branch base builds' {
-        $script:Data.BuildSourceMap | Should -Not -BeNullOrEmpty
-        $script:Data.BuildSourceMap['22631'] | Should -Be '22621'
-        $script:Data.BuildSourceMap['26200'] | Should -Be '26100'
+    It 'declares a BuildSourceMap hashtable' {
+        $script:Data.Keys | Should -Contain 'BuildSourceMap'
+        ,$script:Data.BuildSourceMap | Should -BeOfType [hashtable]
     }
 
-    It 'only aliases builds to a source folder that a real ISO produces' {
-        $isoBuilds = @('22621', '26100', '28000')
-        foreach ($target in $script:Data.BuildSourceMap.Values) {
-            $isoBuilds | Should -Contain $target
-        }
+    It 'ships no build aliases - each feature release needs its own LOF ISO' {
+        # Cross-feature-release FoD aliasing does not work: DISM on 25H2 (26200)
+        # rejects the 24H2 (26100) cabs with 0x800f081f. Keep this empty unless
+        # an entry is proven to install end-to-end on the aliased build.
+        @($script:Data.BuildSourceMap.Keys).Count | Should -Be 0
     }
 }

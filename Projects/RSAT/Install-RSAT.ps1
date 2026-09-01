@@ -272,11 +272,13 @@ function Invoke-Main {
     $buildSourceMap = Get-RsatBuildSourceMap
     $sourceFolder = Resolve-RsatSourceFolder -PackageRoot $packageRoot -BuildNumber $buildNumber -BuildSourceMap $buildSourceMap
     if (-not $sourceFolder) {
-        Write-Log "BLOCKED: no RSAT source folder for build $buildNumber under $packageRoot."
+        Write-Log "BLOCKED: no RSAT source folder for OS build $buildNumber under $packageRoot."
+        Write-Log "This Windows feature release needs its own Languages-and-Optional-Features ISO."
+        Write-Log "Add the LOF ISO whose cabs are version 10.0.$buildNumber.* to media-archive\ and re-run Build-RsatPackage.ps1."
         exit (Get-ExitCodeForResult -IsElevated $true -SourceFolderFound $false -FailedCount 0 -RebootRequired $false)
     }
     if ((Split-Path $sourceFolder -Leaf) -ne "$buildNumber") {
-        Write-Log "Build $buildNumber has no dedicated source; using aliased folder $(Split-Path $sourceFolder -Leaf)."
+        Write-Log "WARNING: OS build $buildNumber has no dedicated source; using aliased folder $(Split-Path $sourceFolder -Leaf). Cross-feature-release FoD cabs are frequently rejected by DISM (0x800f081f) - verify this alias is known good."
     }
     Write-Log "RSAT source folder: $sourceFolder"
 

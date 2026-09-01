@@ -12,13 +12,22 @@ Status: Approved for implementation
 > deployment contexts for no benefit).
 >
 > **Amendment (2026-08-31, later same day):** added a `BuildSourceMap` alias
-> table in `RsatCapabilities.psd1`. Windows 11 23H2 (build 22631) and 25H2
-> (build 26200) are enablement packages on the 22H2 (22621) and 24H2 (26100)
-> servicing branches, and the FoD cab manifests declare `buildCompare="GE"`
-> against the branch base EditionPack, so the base build's cabs install on
-> them. The installer now resolves `22631` → `22621` and `26200` → `26100`.
-> Unmapped unknown builds still fail fast (exit 2) — the alias table is
-> explicit, not a "use whatever is newest" fallback.
+> table in `RsatCapabilities.psd1`, aliasing 23H2 (22631) → 22H2 (22621) and
+> 25H2 (26200) → 24H2 (26100) on the theory that enablement-package builds
+> can reuse their base build's FoD cabs (the cab manifests carry
+> `<parent buildCompare="GE">` against the base EditionPack).
+> **This was wrong — see the next amendment.**
+>
+> **Amendment (2026-09-01):** the `BuildSourceMap` aliases do not work.
+> Deployed to a real 25H2 (build 26200) machine, every capability failed
+> with DISM `0x800f081f` ("The source files could not be found") — DISM's
+> Features-on-Demand applicability check is stricter than the EditionPack
+> `buildCompare="GE"` hint, and 25H2 rejects 24H2 cabs outright. **Each
+> Windows feature release needs its own Languages-and-Optional-Features ISO,
+> matched exactly by build number.** `BuildSourceMap` is now empty (the
+> resolution mechanism stays, for the case a compatible pair is ever proven);
+> an OS build with no matching `<build>` folder fails fast (exit 2) with a
+> log line telling the operator to add the matching LOF ISO and rebuild.
 >
 > **Amendment (2026-08-31, third revision):** the builder no longer parses
 > the OS build from the ISO filename — a third LOF ISO
@@ -156,10 +165,11 @@ PowerShell data file with two keys:
   `CabStem`. The builder uses the `CabStem` values; the installer uses the
   `CapabilityName` values.
 - `BuildSourceMap` — a hashtable of `<OS build>` → `<source-folder build>`
-  aliases, for OS builds that have no ISO of their own but whose FoD cabs
-  are satisfied by another build's folder (`22631` → `22621` for Win11 23H2
-  on the 22H2 branch, `26200` → `26100` for Win11 25H2 on the 24H2 branch).
-  Only the installer reads it.
+  aliases. **Currently empty.** Cross-feature-release aliasing was tried
+  (23H2→22H2, 25H2→24H2) and does not work — DISM rejects the mismatched
+  cabs (0x800f081f). The mechanism stays for a hypothetical future
+  same-payload build pair, but nothing is aliased. Only the installer reads
+  it.
 
 Both scripts load it with `Import-PowerShellDataFile` from their own
 `$PSScriptRoot`. The builder copies this file into `<OutputPath>\`
@@ -274,8 +284,7 @@ tests never execute the script body.
 
 - `RsatCapabilities.psd1`: a test asserts it loads via
   `Import-PowerShellDataFile`, has exactly 9 entries with non-empty
-  `CapabilityName` / `CabStem`, maps `22631` → `22621` and `26200` →
-  `26100`, and only aliases to a build that a real ISO produces.
+  `CapabilityName` / `CabStem`, and ships an empty `BuildSourceMap`.
 - `Build-RsatPackage.ps1`: build-number-from-package-manifest parsing
   (28000 / 22621 / 26100 style version strings, non-`10.0` versions ignored,
   no version → throw); "all 9 cabs present" verification given a fake file
@@ -310,10 +319,14 @@ plan and never run automatically by any task.
 
 ## Open questions
 
-None blocking. The 9-capability table and the `BuildSourceMap` both live in
-one file, `RsatCapabilities.psd1`; adding/renaming a capability or aliasing
-a new OS build to an existing folder is a deliberate one-file edit. If a
-future Windows build ships a cab under a renamed stem, the builder's "all 9
-cabs present" check fails loudly rather than producing a short package. A
-future enablement build on either current branch is a one-line
-`BuildSourceMap` addition.
+None blocking. The 9-capability table lives in one file,
+`RsatCapabilities.psd1`; adding/renaming a capability is a deliberate
+one-file edit. If a future Windows build ships a cab under a renamed stem,
+the builder's "all 9 cabs present" check fails loudly rather than producing
+a short package.
+
+**Every Windows feature release needs its own LOF ISO** in `media-archive\`,
+matched exactly by build number — there is no cross-release FoD reuse
+(confirmed 2026-09-01: 25H2 rejects 24H2 cabs). When Microsoft ships a new
+release, obtain its "Languages and Optional Features" ISO, drop it in
+`media-archive\`, and re-run the builder.

@@ -16,16 +16,21 @@
         @{ CapabilityName = 'OpenSSH.Client';                        CabStem = 'OpenSSH-Client-Package' }
     )
 
-    # Maps an OS CurrentBuildNumber to the LanguagesAndOptionalFeatures
-    # <build> subfolder whose cabs satisfy it, for builds that do not ship
-    # their own ISO. 23H2 (22631) and 25H2 (26200) are enablement packages on
-    # the 22H2 (22621) and 24H2 (26100) servicing branches respectively, and
-    # the FoD cab manifests allow the branch's base build or later, so the
-    # base build's cabs install cleanly on them. Install-RSAT.ps1 still
-    # prefers an exact <build> subfolder when one exists; a build that is
-    # neither present as a subfolder nor listed here fails fast (exit 2).
+    # Aliases an OS CurrentBuildNumber to a different LanguagesAndOptionalFeatures
+    # <build> subfolder. Install-RSAT.ps1 prefers an exact <build> subfolder
+    # when one exists and only consults this map as a fallback; a build that
+    # is neither present as a subfolder nor aliased here fails fast (exit 2).
+    #
+    # Empty on purpose. Cross-feature-release aliasing looked safe (23H2/25H2
+    # ship as enablement packages, and the cab manifests carry
+    # <parent buildCompare="GE"> against the base-build EditionPack) but does
+    # NOT work: DISM's Features-on-Demand applicability check is stricter than
+    # that version comparison. Windows 11 25H2 (build 26200) rejects the 24H2
+    # (26100) cabs with 0x800f081f, "The source files could not be found."
+    # Each Windows feature release needs its own LOF ISO in media-archive\,
+    # matched exactly by build. Add an entry here ONLY after confirming
+    # Install-RSAT.ps1 succeeds end-to-end (real Add-WindowsCapability) on the
+    # aliased build.
     BuildSourceMap = @{
-        '22631' = '22621'
-        '26200' = '26100'
     }
 }

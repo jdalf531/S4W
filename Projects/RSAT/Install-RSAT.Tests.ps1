@@ -21,9 +21,10 @@ Describe 'Get-RsatCapabilityTable' {
 }
 
 Describe 'Get-RsatBuildSourceMap' {
-    It 'returns the alias map from the real psd1 (25H2 -> 24H2)' {
+    It 'returns a hashtable from the real psd1 (currently empty - no aliases)' {
         $map = Get-RsatBuildSourceMap
-        $map['26200'] | Should -Be '26100'
+        ,$map | Should -BeOfType [hashtable]
+        $map.ContainsKey('26200') | Should -BeFalse
     }
 
     It 'returns an empty hashtable when the psd1 has no BuildSourceMap' {

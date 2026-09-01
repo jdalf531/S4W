@@ -136,18 +136,19 @@ readable summary only when run interactively outside a task sequence.
 
 ### Supported builds
 
-| OS build | Source |
-|---|---|
-| 22621 (Win11 22H2) | `\22621\` |
-| 22631 (Win11 23H2) | `\22621\` (alias — same servicing branch) |
-| 26100 (Win11 24H2) | `\26100\` |
-| 26200 (Win11 25H2) | `\26100\` (alias — same servicing branch) |
-| 28000 (Win11 26H1) | `\28000\` |
-| anything else | none → exit `2` |
+| OS build | Source | Notes |
+|---|---|---|
+| 22621 (Win11 22H2) | `\22621\` | from `22621.…OEM.iso` |
+| 26100 (Win11 24H2) | `\26100\` | from `26100.…OEM.iso` |
+| 28000 (Win11 26H1) | `\28000\` | from `mul_…26h1…dvd_….iso` |
+| **anything else** (incl. 23H2 / 25H2) | none → **exit `2`** | needs its own LOF ISO — see below |
 
-Aliases live in `BuildSourceMap` in `RsatCapabilities.psd1`. An exact
-`<build>` subfolder always wins over an alias. An unmapped unknown build
-fails fast — the script never guesses.
+**One LOF ISO per Windows feature release, matched exactly by build.** There
+is no cross-release reuse: DISM's Features-on-Demand applicability check
+rejects mismatched cabs with `0x800f081f`, even for enablement-package
+releases (25H2 will *not* install from 24H2 cabs — confirmed in production).
+`BuildSourceMap` in `RsatCapabilities.psd1` is the alias mechanism but ships
+**empty**; only add an entry after proving that pair installs end-to-end.
 
 ---
 
@@ -163,14 +164,16 @@ resolution, cab verification, exit-code selection, WinPE detection,
 run-context). The tests never mount an ISO, load a real hive, or call a
 real DISM cmdlet.
 
-**Before handoff to helpdesk**, validate the real DISM path manually (no
-task in this repo runs `Add-WindowsCapability` for real automatically):
+**Validate the real DISM path per Windows build** — the Pester tests do not
+call `Add-WindowsCapability`, and cross-release cab reuse does **not** work
+(25H2 rejects 24H2 cabs, `0x800f081f`), so each build folder must be proven
+on a matching machine:
 
-1. On a real 22H2/23H2/24H2/25H2/26H1 machine — run `Install-RSAT.ps1`
-   elevated, confirm exit `0`/`3010` and that the tools + `ssh.exe` appear.
-   For the 26H1 / build-28000 branch, confirm the machine's
-   `CurrentBuildNumber` is actually `28000` — if it reports something else,
-   add a one-line `BuildSourceMap` alias to `28000`.
+1. On a machine of that exact build — run `Install-RSAT.ps1` elevated,
+   confirm exit `0`/`3010` and that the tools + `ssh.exe` appear. If it
+   exits `2`, the build has no matching `<build>` folder — get that
+   release's LOF ISO (cabs versioned `10.0.<build>.*`), drop it in
+   `media-archive\`, rebuild.
 2. Wire `RSAT-Install\` into an MECM Package + a test OSD task sequence step
    in WinPE, confirm the offline path works. This needs the ConfigMgr boot
    image to include the storage/scripting WinPE optional components
@@ -180,11 +183,12 @@ task in this repo runs `Add-WindowsCapability` for real automatically):
 
 ## Maintenance
 
-- **New Windows release on an existing branch** (an enablement package —
-  e.g. 23H2 on 22H2, 25H2 on 24H2): add one line to `BuildSourceMap`.
-- **New servicing branch / new ISO**: drop the LOF ISO into `media-archive/`
-  (any filename), re-run `Build-RsatPackage.ps1` — it reads the build from
-  the cab manifests and creates the `<build>` folder automatically.
+- **Any new Windows release** (feature update *or* enablement package —
+  23H2, 25H2, and everything after all count): get that release's "Languages
+  and Optional Features" ISO, drop it in `media-archive/` (any filename),
+  re-run `Build-RsatPackage.ps1` — it reads the build from the cab manifests
+  and creates the `<build>` folder automatically. There is **no** shortcut
+  of aliasing to an older build's cabs; DISM rejects them.
 - **Add / remove / rename a capability**: edit `RsatCapabilities.psd1`
   (one file); the builder's "all 9 cabs present" check will flag a renamed
   cab stem loudly on the next build.
