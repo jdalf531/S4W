@@ -11,33 +11,36 @@ Status: Approved for implementation
 > deliverable was considered and rejected (extra mount/dismount steps in both
 > deployment contexts for no benefit).
 >
-> **Amendment (2026-08-31, later same day):** added a `BuildSourceMap` alias
-> table in `RsatCapabilities.psd1`, aliasing 23H2 (22631) → 22H2 (22621) and
-> 25H2 (26200) → 24H2 (26100) on the theory that enablement-package builds
-> can reuse their base build's FoD cabs (the cab manifests carry
-> `<parent buildCompare="GE">` against the base EditionPack).
-> **This was wrong — see the next amendment.**
+> **Amendment (2026-08-31 #2):** added a `BuildSourceMap` alias table in
+> `RsatCapabilities.psd1`. Microsoft ships one "Languages and Optional
+> Features" ISO per release pair — the 22621 ISO covers 22H2 **and** 23H2,
+> the 26100 ISO covers 24H2 **and** 25H2 (MS Learn, *Install language packs
+> on Windows 11 Enterprise VMs in Azure Virtual Desktop*). So `22631 → 22621`
+> and `26200 → 26100`. The installer prefers an exact `<build>\` folder and
+> only consults the map as a fallback.
 >
-> **Amendment (2026-09-01):** the `BuildSourceMap` aliases do not work.
-> Deployed to a real 25H2 (build 26200) machine, every capability failed
-> with DISM `0x800f081f` ("The source files could not be found") — DISM's
-> Features-on-Demand applicability check is stricter than the EditionPack
-> `buildCompare="GE"` hint, and 25H2 rejects 24H2 cabs outright. **Each
-> Windows feature release needs its own Languages-and-Optional-Features ISO,
-> matched exactly by build number.** `BuildSourceMap` is now empty (the
-> resolution mechanism stays, for the case a compatible pair is ever proven);
-> an OS build with no matching `<build>` folder fails fast (exit 2) with a
-> log line telling the operator to add the matching LOF ISO and rebuild.
+> **Amendment (2026-08-31 #3):** the builder no longer parses the OS build
+> from the ISO filename — a third LOF ISO
+> (`mul_..._version_26h1_..._dvd_....iso`, Windows 11 26H1, build 28000)
+> carries no build number in its name. The builder reads the build from a
+> cab's own package manifest (`update.mum` — the `10.0.<build>.<revision>`
+> version), which is authoritative and filename-independent. Build 28000
+> gets its own `28000\` folder.
 >
-> **Amendment (2026-08-31, third revision):** the builder no longer parses
-> the OS build from the ISO filename — a third LOF ISO
-> (`mul_..._version_26h1_..._dvd_....iso`, Windows 11 26H1, build 28000, a
-> new servicing branch) carries no build number in its name. The builder
-> now reads the
-> build from a cab's own package manifest (`update.mum` — the
-> `10.0.<build>.<revision>` version DISM matches against), which is
-> authoritative and filename-independent. Build 28000 gets its own `28000\`
-> source folder (no alias — it is its own branch).
+> **Amendment (2026-09-01):** first real MECM deployment (to a 25H2 / build
+> 26200 machine) failed every capability with DISM `0x800f081f`. Root cause:
+> the builder was copying only the `~amd64~~` FeaturePackage cab per
+> capability. The ISO's `LanguagesAndOptionalFeatures\metadata\` folder (the
+> FoD Component Database DISM uses to resolve a capability name to its
+> packages) was **not copied at all**, and the CompDB shows 7 of the 9
+> capabilities also need a `~wow64~~` SatellitePackage cab. Fix: the builder
+> now copies, per capability, the `~amd64~~` cab plus the `~wow64~~` cab when
+> the ISO carries one, **plus the whole `metadata\` folder**, into each
+> `<build>\` output (which now mirrors the ISO's LOF layout). This was a
+> builder bug affecting every build; 25H2 was simply the first real
+> deployment. The 2026-08-31 #2 aliases stand — Microsoft documents them and
+> the CompDB carries no version lock (`<parent buildCompare="GE"
+> version="0.0.0.0">`).
 
 ## Purpose
 
@@ -165,11 +168,10 @@ PowerShell data file with two keys:
   `CabStem`. The builder uses the `CabStem` values; the installer uses the
   `CapabilityName` values.
 - `BuildSourceMap` — a hashtable of `<OS build>` → `<source-folder build>`
-  aliases. **Currently empty.** Cross-feature-release aliasing was tried
-  (23H2→22H2, 25H2→24H2) and does not work — DISM rejects the mismatched
-  cabs (0x800f081f). The mechanism stays for a hypothetical future
-  same-payload build pair, but nothing is aliased. Only the installer reads
-  it.
+  aliases. Microsoft ships one LOF ISO per release pair (the 22621 ISO
+  covers 22H2 and 23H2; the 26100 ISO covers 24H2 and 25H2), so
+  `22631 → 22621` and `26200 → 26100`. Only the installer reads it; an exact
+  `<build>\` folder always wins over an alias.
 
 Both scripts load it with `Import-PowerShellDataFile` from their own
 `$PSScriptRoot`. The builder copies this file into `<OutputPath>\`
@@ -190,29 +192,33 @@ Not part of the deployed package.
     the script.
 - **Per ISO:**
   1. Mount it (`Mount-DiskImage`).
-  2. Verify **all 9** expected language-neutral cabs are present under
-     `LanguagesAndOptionalFeatures\`. If any is missing, hard stop naming
-     the missing cab(s) — no partial output.
+  2. Require `LanguagesAndOptionalFeatures\metadata\` and the `~amd64~~`
+     FeaturePackage cab for all 9 capabilities to be present; hard stop
+     naming any missing FeaturePackage cab — no partial output.
   3. Read the OS build number from the first matched cab's package manifest
      — expand `update.mum` and take the `10.0.<build>.<revision>` version
      (the value DISM matches a capability against). This is authoritative
      and independent of the ISO's filename, which need not carry a build
      number at all. No `10.0.*` version in the manifest is a hard stop.
-  4. Copy the 9 cabs into
-     `<OutputPath>\LanguagesAndOptionalFeatures\<build>\`, preserving
-     filenames as-is.
+  4. Into `<OutputPath>\LanguagesAndOptionalFeatures\<build>\`, preserving
+     the ISO's filename casing: (a) for each capability, its `~amd64~~`
+     FeaturePackage cab plus its `~wow64~~` SatellitePackage cab when the
+     ISO carries one (7 of the 9 do — DISM needs both), and (b) the entire
+     `metadata\` folder verbatim (the FoD Component Database DISM uses to
+     resolve capability names). The `<build>\` folder ends up mirroring the
+     ISO's LOF layout.
   5. Dismount the ISO in a `finally` block.
 - **Idempotent:** re-running for a given build wipes and rebuilds only that
   build's subfolder; other builds in `OutputPath` are untouched.
 - After all ISOs: copies `Install-RSAT.ps1` and `RsatCapabilities.psd1`
   (both checked into this repo, not generated) into `<OutputPath>\`, and
   writes `<OutputPath>\manifest.json` recording, per build, the source ISO
-  filename, the 9 cab filenames, and a UTC timestamp.
-- **Result:** `RSAT-Install\` containing `Install-RSAT.ps1`,
-  `RsatCapabilities.psd1`, `manifest.json`,
-  `LanguagesAndOptionalFeatures\22621\` (9 cabs) and
-  `LanguagesAndOptionalFeatures\26100\` (9 cabs) — nothing else. This whole
-  folder is the MECM package source.
+  filename, the copied cab filenames, `MetadataIncluded`, and a UTC
+  timestamp.
+- **Result:** `RSAT-Install\` = `Install-RSAT.ps1`, `RsatCapabilities.psd1`,
+  `manifest.json`, and `LanguagesAndOptionalFeatures\<build>\` per ISO (each
+  ~16 cabs + a `metadata\` folder, ~36 MB). This whole folder is the MECM
+  package source.
 
 ### 2. `Install-RSAT.ps1`
 
@@ -284,12 +290,13 @@ tests never execute the script body.
 
 - `RsatCapabilities.psd1`: a test asserts it loads via
   `Import-PowerShellDataFile`, has exactly 9 entries with non-empty
-  `CapabilityName` / `CabStem`, and ships an empty `BuildSourceMap`.
+  `CapabilityName` / `CabStem`, and maps `22631 → 22621` and `26200 → 26100`.
 - `Build-RsatPackage.ps1`: build-number-from-package-manifest parsing
   (28000 / 22621 / 26100 style version strings, non-`10.0` versions ignored,
-  no version → throw); "all 9 cabs present" verification given a fake file
-  listing (complete / one missing / case-variant `FOD` token); cab
-  selection produces exactly the 9 expected paths.
+  no version → throw); FeaturePackage-cab-present verification given a fake
+  file listing (complete / one missing / wow64 not required / case-variant
+  `FOD` token); cab selection returns the `~amd64~~` cab per capability plus
+  `~wow64~~` where present, casing preserved, unrelated cabs excluded.
 - `Install-RSAT.ps1`: source-folder resolution (exact match / no match /
   alias followed / exact preferred over alias / alias target missing);
   `BuildSourceMap` loading (present / absent → empty map);
@@ -308,11 +315,11 @@ plan and never run automatically by any task.
 
 ## Error handling
 
-- **Builder:** missing/unreadable ISO, mount failure, any of the 9 expected
-  cabs missing from an ISO, a cab whose manifest carries no `10.0.*` build
-  version, and an unwritable output path are all hard stops with a clear
-  message — no partial or silent
-  output.
+- **Builder:** missing/unreadable ISO, mount failure, a missing
+  `LanguagesAndOptionalFeatures\metadata\` folder, any capability's
+  `~amd64~~` FeaturePackage cab missing, a cab whose manifest carries no
+  `10.0.*` build version, and an unwritable output path are all hard stops
+  with a clear message — no partial or silent output.
 - **Installer:** every failure mode has a defined exit code and a log entry
   describing what was attempted and why it failed, since a helpdesk tech —
   not the author — will be reading a failure.
@@ -322,11 +329,15 @@ plan and never run automatically by any task.
 None blocking. The 9-capability table lives in one file,
 `RsatCapabilities.psd1`; adding/renaming a capability is a deliberate
 one-file edit. If a future Windows build ships a cab under a renamed stem,
-the builder's "all 9 cabs present" check fails loudly rather than producing
-a short package.
+the builder's FeaturePackage-present check fails loudly rather than
+producing a short package.
 
-**Every Windows feature release needs its own LOF ISO** in `media-archive\`,
-matched exactly by build number — there is no cross-release FoD reuse
-(confirmed 2026-09-01: 25H2 rejects 24H2 cabs). When Microsoft ships a new
-release, obtain its "Languages and Optional Features" ISO, drop it in
-`media-archive\`, and re-run the builder.
+**Per new Windows release:** obtain its "Languages and Optional Features"
+ISO (Microsoft ships one per release pair — check the AVD language-packs doc
+for which ISO covers which versions), drop it in `media-archive\`, re-run
+the builder, and add a `BuildSourceMap` entry if the release shares an ISO
+with another (e.g. a 26H2 build would alias to `28000`). The build-vs-source
+match is not just a version check — DISM validates the FoD Component
+Database in `metadata\` and the full package set, so **each `<build>\`
+folder must be verified with a real `Add-WindowsCapability` on a machine of
+that build** before helpdesk handoff.

@@ -38,10 +38,10 @@ Describe 'RsatCapabilities.psd1' {
         ,$script:Data.BuildSourceMap | Should -BeOfType [hashtable]
     }
 
-    It 'ships no build aliases - each feature release needs its own LOF ISO' {
-        # Cross-feature-release FoD aliasing does not work: DISM on 25H2 (26200)
-        # rejects the 24H2 (26100) cabs with 0x800f081f. Keep this empty unless
-        # an entry is proven to install end-to-end on the aliased build.
-        @($script:Data.BuildSourceMap.Keys).Count | Should -Be 0
+    It 'aliases 23H2 (22631) and 25H2 (26200) to their paired base build' {
+        # Microsoft ships one LOF ISO per release pair (22H2+23H2, 24H2+25H2);
+        # the FoD CompDB carries no version lock on the RSAT Features.
+        $script:Data.BuildSourceMap['22631'] | Should -Be '22621'
+        $script:Data.BuildSourceMap['26200'] | Should -Be '26100'
     }
 }

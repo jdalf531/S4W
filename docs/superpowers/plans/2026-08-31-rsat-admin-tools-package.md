@@ -10,15 +10,12 @@
 
 **Spec:** `docs/superpowers/specs/2026-08-18-rsat-install-package-design.md`
 
-> **Post-implementation amendment (2026-08-31):** after all 11 tasks landed,
-> a `BuildSourceMap` alias table was added to `RsatCapabilities.psd1`
-> (`22631` → `22621`, `26200` → `26100`) so Windows 11 23H2 and 25H2 install
-> from their branch base (22H2 / 24H2) cabs. This
-> added `Get-RsatBuildSourceMap` to `Install-RSAT.ps1`, a third parameter
-> (`-BuildSourceMap`) on `Resolve-RsatSourceFolder` (exact `<build>` folder
-> still wins over an alias), and covering tests. See the spec's Amendment
-> note. The "never falls back" constraint below now reads "never falls back
-> *except* via an explicit `BuildSourceMap` entry".
+> **Post-implementation amendment (2026-08-31):** added a `BuildSourceMap`
+> alias table in `RsatCapabilities.psd1` (`22631` → `22621`, `26200` →
+> `26100`) — Microsoft ships one LOF ISO per release pair (22H2+23H2,
+> 24H2+25H2). Added `Get-RsatBuildSourceMap` to `Install-RSAT.ps1`, a third
+> parameter (`-BuildSourceMap`) on `Resolve-RsatSourceFolder` (exact
+> `<build>` folder still wins over an alias), and covering tests.
 >
 > **Post-implementation amendment 2 (2026-08-31):** a third LOF ISO
 > (`mul_..._version_26h1_..._dvd_....iso`, Windows 11 26H1, build **28000**,
@@ -34,16 +31,23 @@
 > "Get-IsoBuildNumber" or "build number from the ISO filename", read
 > "Get-CabPackageBuild / build from the cab package manifest".
 >
-> **Post-implementation amendment 3 (2026-09-01):** the `BuildSourceMap`
-> aliases from amendment 1 **do not work** and are removed. A real 25H2
-> (build 26200) deployment via MECM failed every capability with DISM
-> `0x800f081f` — the `26200`→`26100` alias pointed DISM at 24H2 cabs, which
-> 25H2 rejects. `BuildSourceMap` is now `@{}` (empty); the resolution
-> mechanism (`Get-RsatBuildSourceMap`, `Resolve-RsatSourceFolder
-> -BuildSourceMap`, and their tests) stays. Every Windows feature release
-> needs its own LOF ISO in `media-archive\`, matched exactly by build. The
-> exit-2 log message now tells the operator which `10.0.<build>.*` LOF ISO
-> to add.
+> **Post-implementation amendment 3 (2026-09-01):** first real MECM
+> deployment (25H2 / build 26200) failed every capability with DISM
+> `0x800f081f`. **Root cause was a builder bug, not the alias** — the
+> builder copied only the `~amd64~~` FeaturePackage cab per capability and
+> **omitted the `LanguagesAndOptionalFeatures\metadata\` folder entirely**
+> (the FoD Component Database DISM uses to resolve a capability name → its
+> packages), and the CompDB shows 7 of the 9 capabilities also need a
+> `~wow64~~` SatellitePackage cab. Fix in `Build-RsatPackage.ps1`:
+> `Get-RsatCabFileName` gains an `-Architecture` param; `Find-MissingCabFileName`
+> → `Find-MissingFeatureCab` (checks only the required `~amd64~~` cab);
+> `Get-RsatCabToCopy` now returns `~amd64~~` + `~wow64~~`-where-present with
+> ISO casing preserved; `Invoke-Main` copies the `metadata\` folder into
+> each `<build>\` and hard-fails if the ISO lacks it. The `<build>\` folder
+> now mirrors the ISO's LOF layout (~16 cabs + `metadata\`, ~36 MB). The
+> amendment-1 `BuildSourceMap` aliases stand (Microsoft-documented; the
+> CompDB has no version lock). Wherever tasks below say "copy the 9 cabs" or
+> "all 9 cabs present", read the above.
 
 ## Global Constraints
 
@@ -58,7 +62,7 @@
   - `Rsat.BitLocker.Recovery.Tools` ↔ `Microsoft-Windows-BitLocker-Recovery-Tools-FoD-Package`
   - `OpenSSH.Client` ↔ `OpenSSH-Client-Package`
 - **Language-neutral cab filename pattern:** `<CabStem>~31bf3856ad364e35~amd64~~.cab`. Cab-name matching is **case-insensitive** (`FoD` vs `FOD`).
-- **Supported OS builds:** one `<build>` folder per LOF ISO in `media-archive\`, matched **exactly** by the OS `CurrentBuildNumber`. Currently `22621` (Win11 22H2), `26100` (Win11 24H2), `28000` (Win11 26H1). `BuildSourceMap` is empty — no cross-release aliasing (25H2/24H2 proven incompatible at the DISM level, amendment 3). An OS build with no matching folder fails fast (installer exit `2`) with a log line naming the LOF ISO to obtain.
+- **Supported OS builds:** one `<build>\` folder per LOF ISO in `media-archive\`. Currently `22621` (Win11 22H2), `26100` (Win11 24H2), `28000` (Win11 26H1) from real ISOs; `BuildSourceMap` aliases `22631` (23H2) → `22621` and `26200` (25H2) → `26100` because Microsoft ships one LOF ISO per release pair. An exact `<build>\` folder wins over an alias; a build with neither fails fast (installer exit `2`) with a log line naming the LOF ISO to obtain. Each `<build>\` folder holds ~16 cabs (`~amd64~~` + `~wow64~~`) plus the ISO's `metadata\` folder — see amendment 3.
 - **Install order:** `Rsat.ServerManager.Tools`, then `Rsat.FileServices.Tools`, then `Rsat.ActiveDirectory.DS-LDS.Tools`, then the remaining 6 in any order — so cross-capability dependencies (`BitLocker→AD`, `AD→ServerManager`, `FileServices→ServerManager`, `FailoverCluster→FileServices`) resolve even if DISM's own resolution misbehaves against a source folder.
 - **`OpenSSH.Client` is pre-installed on build 26100** — the installer treats `State = Installed` as success, never re-installs.
 - **`Install-RSAT.ps1` exit codes:** `0` all installed/already present; `3010` installed + reboot required; `1` one or more failures (a capability the target OS does not offer counts as a failure); `2` no matching `<build>` source subfolder; `3` not elevated. Precedence when computing the code: not-elevated → `3`; else no-source-folder → `2`; else failures → `1`; else reboot → `3010`; else `0`.

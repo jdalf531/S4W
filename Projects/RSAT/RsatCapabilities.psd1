@@ -21,16 +21,16 @@
     # when one exists and only consults this map as a fallback; a build that
     # is neither present as a subfolder nor aliased here fails fast (exit 2).
     #
-    # Empty on purpose. Cross-feature-release aliasing looked safe (23H2/25H2
-    # ship as enablement packages, and the cab manifests carry
-    # <parent buildCompare="GE"> against the base-build EditionPack) but does
-    # NOT work: DISM's Features-on-Demand applicability check is stricter than
-    # that version comparison. Windows 11 25H2 (build 26200) rejects the 24H2
-    # (26100) cabs with 0x800f081f, "The source files could not be found."
-    # Each Windows feature release needs its own LOF ISO in media-archive\,
-    # matched exactly by build. Add an entry here ONLY after confirming
-    # Install-RSAT.ps1 succeeds end-to-end (real Add-WindowsCapability) on the
-    # aliased build.
+    # Microsoft ships ONE "Languages and Optional Features" ISO per pair of
+    # releases: the 22621 ISO covers 22H2 (22621) AND 23H2 (22631); the 26100
+    # ISO covers 24H2 (26100) AND 25H2 (26200). The FoD CompDB confirms this -
+    # the RSAT Features carry <parent buildCompare="GE" version="0.0.0.0">,
+    # i.e. no version lock. So enablement-package builds are aliased to their
+    # base build's folder.
+    # (See MS Learn "Install language packs on Windows 11 Enterprise VMs in
+    # Azure Virtual Desktop".)
     BuildSourceMap = @{
+        '22631' = '22621'   # Win11 23H2 -> 22H2 LOF ISO
+        '26200' = '26100'   # Win11 25H2 -> 24H2 LOF ISO
     }
 }
